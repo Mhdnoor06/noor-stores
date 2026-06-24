@@ -30,6 +30,19 @@ body {
   background: #bcc2cc;
 }
 
+@media print {
+  body {
+    background: #fff;
+  }
+  .label-cell {
+    break-inside: avoid;
+    border-color: #cbd0d8 !important;
+  }
+  @page {
+    margin: 12mm;
+  }
+}
+
 @layer components {
   /* Surfaces */
   .card {

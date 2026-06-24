@@ -70,6 +70,21 @@ export class EscPosBuilder {
     return this.raw(CMD.CUT_PAPER);
   }
 
+  // Prints a CODE128 barcode (works for any digit/ASCII string, widely
+  // supported). HRI digits print below the bars.
+  code128(data: string, height = 64): this {
+    this.raw([GS, 0x48, 0x02]); // HRI text below barcode
+    this.raw([GS, 0x66, 0x00]); // HRI font A
+    this.raw([GS, 0x68, height]); // barcode height
+    this.raw([GS, 0x77, 0x02]); // module width
+    // GS k 73 n d... ; data is prefixed with "{B" to select CODE128 code set B
+    const payload = [0x7b, 0x42];
+    for (let i = 0; i < data.length; i++) payload.push(data.charCodeAt(i) & 0x7f);
+    this.raw([GS, 0x6b, 73, payload.length]);
+    this.raw(payload);
+    return this;
+  }
+
   build(): Uint8Array {
     return new Uint8Array(this.chunks);
   }
@@ -112,8 +127,8 @@ export function money(n: number): string {
 
 /* ---------------------------- Receipts ---------------------------- */
 
-import type { Bill, Settings } from "./types";
-import { qtyLabel } from "./units";
+import type { Bill, Item, Settings } from "./types";
+import { qtyLabel, perUnit } from "./units";
 
 function formatDate(epoch: number): string {
   const d = new Date(epoch);
@@ -182,6 +197,25 @@ export function buildReceipt(bill: Bill, settings: Settings): Uint8Array {
   if (settings.footer) settings.footer.split("\n").forEach((l) => b.line(l));
   b.feed(3).cut();
 
+  return b.build();
+}
+
+// Prints barcode labels on the thermal printer — one stacked label per item
+// (name + price + CODE128 barcode). Good for sticking on loose/unbranded goods.
+export function buildLabels(items: Item[]): Uint8Array {
+  const b = new EscPosBuilder();
+  b.init();
+  for (const item of items) {
+    if (!item.barcode) continue;
+    b.align("center");
+    const name = item.name.length > 32 ? item.name.slice(0, 31) + "…" : item.name;
+    b.bold(true).line(name).bold(false);
+    b.line(`${money(item.price)} ${perUnit(item.unit)}`);
+    b.feed(1);
+    b.code128(item.barcode);
+    b.feed(3);
+  }
+  b.cut();
   return b.build();
 }
 

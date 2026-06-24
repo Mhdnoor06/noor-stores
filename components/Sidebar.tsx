@@ -9,7 +9,7 @@ import InstallButton from "./InstallButton";
 export default function Sidebar() {
   const pathname = usePathname();
   return (
-    <aside className="sticky top-0 hidden h-screen w-[238px] flex-none flex-col border-r border-line bg-white px-3.5 py-4 lg:flex">
+    <aside className="sticky top-0 hidden h-screen w-[238px] flex-none flex-col border-r border-line bg-white px-3.5 py-4 lg:flex print:!hidden">
       <Link href="/" className="mb-6 flex items-center gap-2.5 px-2">
         <span className="flex h-8 w-8 items-center justify-center rounded-tile bg-brand text-sm font-bold text-white">
           NS

@@ -8,7 +8,7 @@ import InstallButton from "./InstallButton";
 
 export function MobileTopBar() {
   return (
-    <header className="sticky top-0 z-20 flex items-center justify-between border-b border-line bg-white/95 px-4 py-3 backdrop-blur lg:hidden">
+    <header className="sticky top-0 z-20 flex items-center justify-between border-b border-line bg-white/95 px-4 py-3 backdrop-blur lg:hidden print:hidden">
       <Link href="/" className="flex items-center gap-2">
         <span className="flex h-7 w-7 items-center justify-center rounded-tile bg-brand text-xs font-bold text-white">
           NS
@@ -26,7 +26,7 @@ export function MobileTopBar() {
 export function MobileBottomNav() {
   const pathname = usePathname();
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-line bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-line bg-white pb-[env(safe-area-inset-bottom)] lg:hidden print:hidden">
       {NAV_ITEMS.map(({ href, label, Icon }) => {
         const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
         return (

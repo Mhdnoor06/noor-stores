@@ -9,21 +9,27 @@ import {
   upsertItem,
 } from "@/lib/db";
 import { Item } from "@/lib/types";
-import { money } from "@/lib/escpos";
+import { money, buildLabels } from "@/lib/escpos";
 import { decodeImageFile } from "@/lib/scan";
 import { lookupProduct } from "@/lib/product-lookup";
 import { UNITS, CATEGORIES, perUnit } from "@/lib/units";
+import { generateInternalBarcode } from "@/lib/barcode";
+import { useBluetooth } from "@/components/PrinterProvider";
 import PageHeader from "@/components/PageHeader";
-import { ScanLine, Search, Plus, Trash2, X } from "lucide-react";
+import Barcode from "@/components/Barcode";
+import { ScanLine, Search, Plus, Trash2, X, Sparkles, Printer, ChevronLeft, ChevronRight } from "lucide-react";
 
 const EMPTY = {
   id: "", name: "", price: "", unit: "pcs", category: "", mrp: "", cost: "",
   size: "", code: "", barcode: "", stock: "", reorder: "",
 };
 
+const PAGE_SIZE = 20;
+
 export default function ItemsPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const [form, setForm] = useState<typeof EMPTY>(EMPTY);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -35,6 +41,34 @@ export default function ItemsPage() {
   const priceRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const editing = form.id !== "";
+  const { isConnected, print, connect } = useBluetooth();
+
+  // Print the label for the item currently in the form (thermal printer).
+  async function printLabel() {
+    const bc = form.barcode.trim();
+    if (!bc) return;
+    if (!isConnected) {
+      setErr("Printer not connected — connect it (top bar), then print.");
+      connect();
+      return;
+    }
+    try {
+      await print(
+        buildLabels([
+          {
+            id: form.id || "tmp",
+            name: form.name.trim() || "Item",
+            price: parseFloat(form.price) || 0,
+            unit: form.unit,
+            barcode: bc,
+          },
+        ])
+      );
+      setMsg("Label sent to printer.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Print failed.");
+    }
+  }
 
   async function refresh() {
     try {
@@ -67,6 +101,10 @@ export default function ItemsPage() {
     if (!name || isNaN(price) || price < 0) return;
     setSaving(true);
     setErr("");
+    // Every product ends up with a scannable barcode — auto-generate an
+    // internal one for items that didn't come with their own.
+    const existing = new Set(items.map((i) => i.barcode).filter(Boolean) as string[]);
+    const barcode = form.barcode.trim() || generateInternalBarcode(existing);
     const item: Item = {
       id: form.id || uid(),
       name,
@@ -77,7 +115,7 @@ export default function ItemsPage() {
       costPrice: parseFloat(form.cost) || undefined,
       size: form.size.trim() || undefined,
       code: form.code.trim() || undefined,
-      barcode: form.barcode.trim() || undefined,
+      barcode,
       stock: parseInt(form.stock, 10) || 0,
       reorderLevel: parseInt(form.reorder, 10) || 0,
     };
@@ -178,6 +216,15 @@ export default function ItemsPage() {
       (i.barcode || "").includes(query.trim())
   );
 
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const paged = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  // Reset to the first page whenever the search or the catalogue changes.
+  useEffect(() => {
+    setPage(1);
+  }, [query, items.length]);
+
   return (
     <div className="space-y-5">
       <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={handleScanFile} className="hidden" />
@@ -228,8 +275,9 @@ export default function ItemsPage() {
           )}
         </div>
       ) : (
+        <>
         <div className="card divide-y divide-line-soft overflow-hidden">
-          {filtered.map((i) => (
+          {paged.map((i) => (
             <div
               key={i.id}
               onClick={() => handleEdit(i)}
@@ -260,6 +308,34 @@ export default function ItemsPage() {
             </div>
           ))}
         </div>
+
+        {pageCount > 1 && (
+          <div className="flex items-center justify-between px-1">
+            <p className="text-xs text-muted-light">
+              {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
+                className="btn-ghost h-9 px-3"
+              >
+                <ChevronLeft size={16} /> Prev
+              </button>
+              <span className="text-xs font-semibold text-muted-dark">
+                Page {safePage} / {pageCount}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                disabled={safePage >= pageCount}
+                className="btn-ghost h-9 px-3"
+              >
+                Next <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
+        </>
       )}
 
       {/* form modal */}
@@ -296,11 +372,38 @@ export default function ItemsPage() {
                 </div>
                 <Field label="Barcode">
                   <div className="flex gap-2">
-                    <input value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="input" inputMode="numeric" placeholder="Scan or type" />
+                    <input value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="input" inputMode="numeric" placeholder="Scan, type or generate" />
                     <button type="button" onClick={openCamera} disabled={decoding} className="btn-ghost flex-none px-3" aria-label="Scan">
                       <ScanLine size={18} />
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, barcode: generateInternalBarcode(new Set(items.map((i) => i.barcode).filter(Boolean) as string[])) }))}
+                    className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline"
+                  >
+                    <Sparkles size={13} /> Generate internal barcode
+                  </button>
+
+                  {/* live barcode preview + print */}
+                  {form.barcode.trim() ? (
+                    <div className="mt-2 rounded-tile border border-line bg-white p-2">
+                      <div className="flex justify-center">
+                        <Barcode value={form.barcode.trim()} height={44} width={1.5} fontSize={13} />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={printLabel}
+                        className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-md bg-canvas py-1.5 text-xs font-semibold text-muted-dark hover:bg-line-soft"
+                      >
+                        <Printer size={14} /> Print this label
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-muted-light">
+                      No barcode on the product? One is auto-generated on save — then you can print a label and scan it.
+                    </p>
+                  )}
                 </Field>
                 <Field label="SKU / HSN code">
                   <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="input" placeholder="optional" />
