@@ -7,6 +7,7 @@ import { buildReceipt, money } from "@/lib/escpos";
 import { useBluetooth } from "@/components/PrinterProvider";
 import PageHeader from "@/components/PageHeader";
 import { Printer } from "lucide-react";
+import { qtyLabel } from "@/lib/units";
 
 function fmt(epoch: number): string {
   const d = new Date(epoch);
@@ -101,7 +102,8 @@ export default function BillsPage() {
                     {b.lines.map((l) => (
                       <div key={l.itemId} className="flex justify-between text-sm">
                         <span className="text-muted-dark">
-                          {l.name} <span className="text-muted-light">×{l.qty}</span>
+                          {l.name}{" "}
+                          <span className="text-muted-light">{qtyLabel(l.qty, l.unit)}</span>
                         </span>
                         <span className="font-medium text-ink">
                           {money(l.price * l.qty)}
@@ -109,6 +111,18 @@ export default function BillsPage() {
                       </div>
                     ))}
                   </div>
+                  {(b.discount ?? 0) > 0 && (
+                    <div className="mt-2 space-y-1 border-t border-dashed border-line pt-2 text-sm">
+                      <div className="flex justify-between text-muted">
+                        <span>Subtotal</span>
+                        <span>{money(b.subtotal ?? b.total + (b.discount ?? 0))}</span>
+                      </div>
+                      <div className="flex justify-between text-muted">
+                        <span>Discount</span>
+                        <span>-{money(b.discount ?? 0)}</span>
+                      </div>
+                    </div>
+                  )}
                   <div className="mt-2 flex items-center justify-between border-t border-dashed border-line pt-2">
                     <span className="font-bold">Total</span>
                     <span className="font-bold text-brand">{money(b.total)}</span>

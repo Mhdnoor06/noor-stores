@@ -2,6 +2,7 @@
 
 import { Item } from "@/lib/types";
 import { money } from "@/lib/escpos";
+import { perUnit } from "@/lib/units";
 
 export default function ItemCard({
   item,
@@ -21,7 +22,12 @@ export default function ItemCard({
       {item.size ? (
         <span className="text-xs text-muted-light">{item.size}</span>
       ) : null}
-      <span className="mt-1 text-sm font-bold text-brand">{money(item.price)}</span>
+      <span className="mt-1 text-sm font-bold text-brand">
+        {money(item.price)}
+        <span className="ml-0.5 text-[10px] font-normal text-muted-light">
+          {perUnit(item.unit)}
+        </span>
+      </span>
     </button>
   );
 }

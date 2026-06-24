@@ -1,12 +1,30 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { PrinterProvider } from "@/components/PrinterProvider";
 import Sidebar from "@/components/Sidebar";
 import { MobileTopBar, MobileBottomNav } from "@/components/MobileNav";
+import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 
 export const metadata: Metadata = {
   title: "Noor POS — Billing",
   description: "Web POS billing with EZO Bluetooth thermal printer",
+  applicationName: "Noor POS",
+  appleWebApp: {
+    capable: true,
+    title: "Noor POS",
+    statusBarStyle: "default",
+  },
+  icons: {
+    icon: "/icons/icon-192.png",
+    apple: "/icons/apple-touch-icon.png",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#4338ca",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -29,6 +47,7 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen bg-canvas font-sans text-ink antialiased">
+        <ServiceWorkerRegister />
         <PrinterProvider>
           <div className="flex min-h-screen">
             <Sidebar />

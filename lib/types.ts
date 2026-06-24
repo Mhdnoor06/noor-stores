@@ -4,7 +4,11 @@
 export interface Item {
   id: string;
   name: string;
-  price: number;
+  price: number; // selling price per `unit`
+  unit?: string; // unit of sale: pcs, kg, g, L, ml, dozen, pack, ...
+  category?: string; // department/category
+  mrp?: number; // printed max retail price (optional)
+  costPrice?: number; // purchase cost, for margin (optional)
   size?: string; // pack size / weight / volume, e.g. "500 g", "1 L", "330 ml"
   code?: string; // optional SKU / HSN
   barcode?: string; // scanned product barcode (EAN/UPC/etc.), used for lookup
@@ -16,8 +20,9 @@ export interface BillLine {
   itemId: string;
   name: string;
   size?: string; // copied from the item at sale time, for the receipt
+  unit?: string; // unit of sale, for the receipt
   price: number; // unit price at time of sale
-  qty: number;
+  qty: number; // count, or measured amount for kg/g/L/ml
 }
 
 export interface Bill {
@@ -27,7 +32,12 @@ export interface Bill {
   customerName?: string;
   customerPhone?: string;
   lines: BillLine[];
-  total: number;
+  subtotal?: number; // sum of line amounts before discount
+  discount?: number; // amount knocked off
+  roundOff?: number; // rounding adjustment (+/-)
+  total: number; // final payable
+  paymentMethod?: "cash" | "upi" | "card";
+  amountPaid?: number; // tendered (cash) or = total
 }
 
 export interface Settings {

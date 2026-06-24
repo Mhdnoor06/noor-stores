@@ -5,6 +5,9 @@ next-env.d.ts
 .DS_Store
 *.log
 
+# vercel
+.vercel
+
 # secrets — never commit
 .env
 .env*.local

@@ -1,55 +1,93 @@
 "use client";
 
+import { Minus, Plus, X } from "lucide-react";
 import { BillLine } from "@/lib/types";
 import { money } from "@/lib/escpos";
+import { isMeasured, perUnit } from "@/lib/units";
 
 export default function BillItem({
   line,
   onQty,
+  onSetQty,
+  onSetPrice,
   onRemove,
 }: {
   line: BillLine;
   onQty: (itemId: string, delta: number) => void;
+  onSetQty: (itemId: string, qty: number) => void;
+  onSetPrice: (itemId: string, price: number) => void;
   onRemove: (itemId: string) => void;
 }) {
+  const measured = isMeasured(line.unit);
   return (
     <div className="flex items-center gap-3 border-t border-line-soft py-3 first:border-t-0">
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold text-ink">
           {line.name}
           {line.size ? (
-            <span className="ml-1 font-normal text-muted-light">· {line.size}</span>
+            <span className="font-normal text-muted-light"> · {line.size}</span>
           ) : null}
         </p>
-        <p className="text-xs text-muted-light">
-          {money(line.price)} × {line.qty} ={" "}
+        <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-light">
+          <span>₹</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            inputMode="decimal"
+            value={line.price}
+            onChange={(e) => onSetPrice(line.itemId, parseFloat(e.target.value) || 0)}
+            className="h-6 w-14 rounded-md border border-line-input bg-white px-1.5 text-xs font-semibold text-ink outline-none focus:border-brand"
+            aria-label="Edit price"
+          />
+          <span>{perUnit(line.unit)} =</span>
           <span className="font-semibold text-muted-dark">
             {money(line.price * line.qty)}
           </span>
-        </p>
+        </div>
       </div>
-      <div className="flex items-center gap-1">
-        <button
-          onClick={() => onQty(line.itemId, -1)}
-          className="flex h-8 w-8 items-center justify-center rounded-[9px] border border-line text-lg text-muted-dark hover:bg-cream"
-          aria-label="Decrease"
-        >
-          −
-        </button>
-        <span className="w-7 text-center text-sm font-bold">{line.qty}</span>
-        <button
-          onClick={() => onQty(line.itemId, 1)}
-          className="flex h-8 w-8 items-center justify-center rounded-[9px] border border-line text-lg text-muted-dark hover:bg-cream"
-          aria-label="Increase"
-        >
-          +
-        </button>
-      </div>
+
+      {measured ? (
+        // measured units → type the exact weight/volume
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            step="any"
+            min="0"
+            inputMode="decimal"
+            value={line.qty}
+            onChange={(e) => onSetQty(line.itemId, parseFloat(e.target.value) || 0)}
+            className="h-8 w-16 rounded-[9px] border border-line-input bg-white px-2 text-center text-sm font-bold outline-none focus:border-brand"
+          />
+          <span className="w-6 text-xs font-medium text-muted-light">{line.unit}</span>
+        </div>
+      ) : (
+        // counted units → +/- stepper
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onQty(line.itemId, -1)}
+            className="flex h-8 w-8 items-center justify-center rounded-[9px] border border-line-input text-muted-dark hover:bg-canvas"
+            aria-label="Decrease"
+          >
+            <Minus size={15} />
+          </button>
+          <span className="w-7 text-center text-sm font-bold">{line.qty}</span>
+          <button
+            onClick={() => onQty(line.itemId, 1)}
+            className="flex h-8 w-8 items-center justify-center rounded-[9px] border border-line-input text-muted-dark hover:bg-canvas"
+            aria-label="Increase"
+          >
+            <Plus size={15} />
+          </button>
+        </div>
+      )}
+
       <button
         onClick={() => onRemove(line.itemId)}
-        className="text-xs font-medium text-danger hover:underline"
+        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-light hover:bg-danger-soft hover:text-danger"
+        aria-label="Remove"
       >
-        Remove
+        <X size={16} />
       </button>
     </div>
   );

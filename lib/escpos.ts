@@ -88,14 +88,13 @@ export function twoCol(left: string, right: string, width = 32): string {
   return left + " ".repeat(space) + right;
 }
 
-// Item row: name (left, truncated) + qty + amount (right).
+// Item row: name (left, truncated) + qty label + amount (right).
 export function itemRow(
   name: string,
-  qty: number,
+  qtyCol: string,
   amount: string,
   width = 32
 ): string {
-  const qtyCol = `x${qty}`;
   const right = `${qtyCol}  ${amount}`;
   const nameWidth = Math.max(1, width - right.length);
   const trimmed =
@@ -114,6 +113,7 @@ export function money(n: number): string {
 /* ---------------------------- Receipts ---------------------------- */
 
 import type { Bill, Settings } from "./types";
+import { qtyLabel } from "./units";
 
 function formatDate(epoch: number): string {
   const d = new Date(epoch);
@@ -148,13 +148,34 @@ export function buildReceipt(bill: Bill, settings: Settings): Uint8Array {
 
   for (const line of bill.lines) {
     const label = line.size ? `${line.name} ${line.size}` : line.name;
-    b.line(itemRow(label, line.qty, money(line.price * line.qty), w));
+    b.line(
+      itemRow(label, qtyLabel(line.qty, line.unit), money(line.price * line.qty), w)
+    );
   }
 
   b.line(rule(w));
+  const discount = bill.discount ?? 0;
+  const roundOff = bill.roundOff ?? 0;
+  if (discount > 0 || roundOff !== 0) {
+    const sub = bill.subtotal ?? bill.total + discount - roundOff;
+    b.line(twoCol("Subtotal:", money(sub), w));
+    if (discount > 0) b.line(twoCol("Discount:", "-" + money(discount), w));
+    if (roundOff !== 0)
+      b.line(twoCol("Round off:", (roundOff >= 0 ? "+" : "-") + money(Math.abs(roundOff)), w));
+  }
   b.bold(true).large(true);
   b.line(twoCol("TOTAL:", money(bill.total), Math.floor(w / 2)));
   b.large(false).bold(false);
+
+  // payment line
+  const pm = bill.paymentMethod ?? "cash";
+  const pmLabel = pm === "upi" ? "UPI" : pm === "card" ? "Card" : "Cash";
+  if (pm === "cash" && bill.amountPaid != null && bill.amountPaid >= bill.total) {
+    b.line(twoCol("Paid (Cash):", money(bill.amountPaid), w));
+    b.line(twoCol("Change:", money(bill.amountPaid - bill.total), w));
+  } else {
+    b.line(twoCol("Paid:", pmLabel, w));
+  }
   b.line(rule(w, "="));
 
   b.align("center");

@@ -1,6 +1,4 @@
-// Supabase-backed data access for items. (Bills & settings still use
-// lib/storage.ts for now — only the items path has moved to the database, to
-// support barcode add/lookup.)
+// Supabase-backed data access — items, bills and settings.
 
 import { supabase } from "./supabase";
 import { Bill, BillLine, DEFAULT_SETTINGS, Item, Settings } from "./types";
@@ -9,6 +7,10 @@ type ItemRow = {
   id: string;
   name: string;
   price: number | string;
+  unit: string | null;
+  category: string | null;
+  mrp: number | string | null;
+  cost_price: number | string | null;
   size: string | null;
   code: string | null;
   barcode: string | null;
@@ -21,6 +23,10 @@ function rowToItem(r: ItemRow): Item {
     id: r.id,
     name: r.name,
     price: Number(r.price),
+    unit: r.unit ?? "pcs",
+    category: r.category ?? undefined,
+    mrp: r.mrp != null ? Number(r.mrp) : undefined,
+    costPrice: r.cost_price != null ? Number(r.cost_price) : undefined,
     size: r.size ?? undefined,
     code: r.code ?? undefined,
     barcode: r.barcode ?? undefined,
@@ -34,6 +40,10 @@ function itemToRow(item: Item) {
     id: item.id,
     name: item.name,
     price: item.price,
+    unit: item.unit ?? "pcs",
+    category: item.category ?? null,
+    mrp: item.mrp ?? null,
+    cost_price: item.costPrice ?? null,
     size: item.size ?? null,
     code: item.code ?? null,
     barcode: item.barcode ?? null,
@@ -113,7 +123,12 @@ type BillRow = {
   number: number;
   customer_name: string | null;
   customer_phone: string | null;
+  subtotal: number | string | null;
+  discount: number | string | null;
+  round_off: number | string | null;
   total: number | string;
+  payment_method: string | null;
+  amount_paid: number | string | null;
   lines: BillLine[];
   created_at: string;
 };
@@ -126,7 +141,12 @@ function rowToBill(r: BillRow): Bill {
     customerName: r.customer_name ?? undefined,
     customerPhone: r.customer_phone ?? undefined,
     lines: r.lines ?? [],
+    subtotal: r.subtotal != null ? Number(r.subtotal) : undefined,
+    discount: r.discount != null ? Number(r.discount) : 0,
+    roundOff: r.round_off != null ? Number(r.round_off) : 0,
     total: Number(r.total),
+    paymentMethod: (r.payment_method as Bill["paymentMethod"]) ?? "cash",
+    amountPaid: r.amount_paid != null ? Number(r.amount_paid) : undefined,
   };
 }
 
@@ -145,7 +165,12 @@ export async function saveBill(bill: Bill): Promise<void> {
     number: bill.number,
     customer_name: bill.customerName ?? null,
     customer_phone: bill.customerPhone ?? null,
+    subtotal: bill.subtotal ?? bill.total,
+    discount: bill.discount ?? 0,
+    round_off: bill.roundOff ?? 0,
     total: bill.total,
+    payment_method: bill.paymentMethod ?? "cash",
+    amount_paid: bill.amountPaid ?? bill.total,
     lines: bill.lines,
     created_at: new Date(bill.createdAt).toISOString(),
   });

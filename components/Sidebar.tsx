@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_ITEMS } from "./navConfig";
 import PrinterStatus from "./PrinterStatus";
+import InstallButton from "./InstallButton";
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -11,7 +12,7 @@ export default function Sidebar() {
     <aside className="sticky top-0 hidden h-screen w-[238px] flex-none flex-col border-r border-line bg-white px-3.5 py-4 lg:flex">
       <Link href="/" className="mb-6 flex items-center gap-2.5 px-2">
         <span className="flex h-8 w-8 items-center justify-center rounded-tile bg-brand text-sm font-bold text-white">
-          N
+          NS
         </span>
         <span className="text-[15px] font-bold tracking-[-.01em] text-ink">
           Noor POS
@@ -36,7 +37,8 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <div className="mt-auto border-t border-line-soft pt-3">
+      <div className="mt-auto space-y-3 border-t border-line-soft pt-3">
+        <InstallButton />
         <PrinterStatus />
       </div>
     </aside>

@@ -4,17 +4,21 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { NAV_ITEMS } from "./navConfig";
 import PrinterStatus from "./PrinterStatus";
+import InstallButton from "./InstallButton";
 
 export function MobileTopBar() {
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between border-b border-line bg-white/95 px-4 py-3 backdrop-blur lg:hidden">
       <Link href="/" className="flex items-center gap-2">
         <span className="flex h-7 w-7 items-center justify-center rounded-tile bg-brand text-xs font-bold text-white">
-          N
+          NS
         </span>
         <span className="text-[15px] font-bold text-ink">Noor POS</span>
       </Link>
-      <PrinterStatus compact />
+      <div className="flex items-center gap-2">
+        <InstallButton compact />
+        <PrinterStatus compact />
+      </div>
     </header>
   );
 }
