@@ -1,0 +1,34 @@
+{
+  "name": "ezo-pos-billing",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
+    "@zxing/browser": "^0.2.0",
+    "@zxing/library": "^0.22.0",
+    "lucide-react": "^1.21.0",
+    "next": "^14.2.33",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "recharts": "^3.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/web-bluetooth": "0.0.20",
+    "autoprefixer": "10.4.19",
+    "bwip-js": "^4.11.1",
+    "jimp": "^1.6.1",
+    "postcss": "8.4.39",
+    "sharp": "^0.35.2",
+    "tailwindcss": "3.4.6",
+    "typescript": "5.5.3"
+  }
+}

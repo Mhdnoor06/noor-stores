@@ -1,0 +1,11 @@
+/node_modules
+/.next
+/out
+next-env.d.ts
+.DS_Store
+*.log
+
+# secrets — never commit
+.env
+.env*.local
+.env.production

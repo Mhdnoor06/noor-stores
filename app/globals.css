@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --font-sans: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: #d9ddfa;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d3d7de;
+  border-radius: 8px;
+  border: 2px solid #f6f7f9;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #bcc2cc;
+}
+
+@layer components {
+  /* Surfaces */
+  .card {
+    @apply rounded-card border border-line bg-white shadow-card;
+  }
+
+  /* Form controls */
+  .input {
+    @apply h-11 w-full rounded-tile border border-line-input bg-white px-3.5
+      text-sm text-ink outline-none transition
+      placeholder:text-muted-light
+      focus:border-brand focus:ring-2 focus:ring-brand/15;
+  }
+  textarea.input,
+  select.input {
+    @apply py-2.5;
+  }
+  textarea.input {
+    @apply h-auto;
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-semibold text-muted;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex h-11 items-center justify-center gap-2 rounded-tile
+      px-4 text-sm font-semibold transition disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-brand text-white shadow-brand hover:bg-brand-dark;
+  }
+  .btn-ghost {
+    @apply btn border border-line-input bg-white text-muted-dark hover:bg-canvas;
+  }
+  .btn-soft {
+    @apply btn bg-brand-soft text-brand hover:bg-brand hover:text-white;
+  }
+
+  /* Pills / badges */
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1
+      text-[11.5px] font-semibold;
+  }
+
+  /* Section label, uppercase tracking like the reference */
+  .eyebrow {
+    @apply text-[11.5px] font-bold uppercase tracking-[.06em] text-muted-light;
+  }
+}
