@@ -230,10 +230,13 @@ export default function ItemsPage() {
       ) : (
         <div className="card divide-y divide-line-soft overflow-hidden">
           {filtered.map((i) => (
-            <button
+            <div
               key={i.id}
               onClick={() => handleEdit(i)}
-              className="flex w-full items-center gap-3 px-3.5 py-3 text-left hover:bg-canvas"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === "Enter" && handleEdit(i)}
+              className="flex w-full cursor-pointer items-center gap-3 px-3.5 py-3 text-left hover:bg-canvas"
             >
               <div className="flex h-10 w-10 flex-none items-center justify-center rounded-tile bg-brand-soft text-sm font-bold text-brand">
                 {i.name.slice(0, 2).toUpperCase()}
@@ -254,7 +257,7 @@ export default function ItemsPage() {
                 </p>
                 <StockBadge stock={i.stock ?? 0} reorder={i.reorderLevel ?? 0} />
               </div>
-            </button>
+            </div>
           ))}
         </div>
       )}
