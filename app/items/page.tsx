@@ -10,13 +10,13 @@ import {
 } from "@/lib/db";
 import { Item } from "@/lib/types";
 import { money, buildLabels } from "@/lib/escpos";
-import { decodeImageFile } from "@/lib/scan";
 import { lookupProduct } from "@/lib/product-lookup";
 import { UNITS, CATEGORIES, perUnit } from "@/lib/units";
 import { generateInternalBarcode } from "@/lib/barcode";
 import { useBluetooth } from "@/components/PrinterProvider";
 import PageHeader from "@/components/PageHeader";
 import Barcode from "@/components/Barcode";
+import ScannerModal from "@/components/ScannerModal";
 import { ScanLine, Search, Plus, Trash2, X, Sparkles, Printer, ChevronLeft, ChevronRight } from "lucide-react";
 
 const EMPTY = {
@@ -34,12 +34,13 @@ export default function ItemsPage() {
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [decoding, setDecoding] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+  const [scanOpen, setScanOpen] = useState(false);
+  // "list" = scan to find/add a product; "field" = scan to fill the form's barcode.
+  const [scanMode, setScanMode] = useState<"list" | "field">("list");
   const nameRef = useRef<HTMLInputElement>(null);
   const priceRef = useRef<HTMLInputElement>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const editing = form.id !== "";
   const { isConnected, print, connect } = useBluetooth();
 
@@ -186,26 +187,21 @@ export default function ItemsPage() {
     }
   }
 
-  function openCamera() {
+  function openScanList() {
     setErr("");
     setMsg("");
-    fileRef.current?.click();
+    setScanMode("list");
+    setScanOpen(true);
   }
-  async function handleScanFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    setDecoding(true);
+  function openScanField() {
     setErr("");
-    try {
-      const code = await decodeImageFile(file);
-      if (code) handleScanned(code);
-      else setErr("Couldn't read that barcode. Keep it flat, sharp and centered, then snap again.");
-    } catch {
-      setErr("Couldn't read that image. Try again.");
-    } finally {
-      setDecoding(false);
-    }
+    setScanMode("field");
+    setScanOpen(true);
+  }
+  // Route a scanned code: into the form's barcode field, or to find/add a product.
+  function handleDetect(code: string) {
+    if (scanMode === "field") setForm((f) => ({ ...f, barcode: code }));
+    else handleScanned(code);
   }
 
   const filtered = items.filter(
@@ -227,16 +223,13 @@ export default function ItemsPage() {
 
   return (
     <div className="space-y-5">
-      <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={handleScanFile} className="hidden" />
-
       <PageHeader
         title="Items"
         subtitle="Your product catalogue and stock."
         action={
           <div className="flex gap-2">
-            <button onClick={openCamera} disabled={decoding} className="btn-ghost h-10">
-              <ScanLine size={17} />
-              {decoding ? "Reading…" : "Scan"}
+            <button onClick={openScanList} className="btn-ghost h-10">
+              <ScanLine size={17} /> Scan
             </button>
             <button onClick={openAdd} className="btn-primary h-10">
               <Plus size={17} strokeWidth={2.3} /> Add item
@@ -373,7 +366,7 @@ export default function ItemsPage() {
                 <Field label="Barcode">
                   <div className="flex gap-2">
                     <input value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="input" inputMode="numeric" placeholder="Scan, type or generate" />
-                    <button type="button" onClick={openCamera} disabled={decoding} className="btn-ghost flex-none px-3" aria-label="Scan">
+                    <button type="button" onClick={openScanField} className="btn-ghost flex-none px-3" aria-label="Scan">
                       <ScanLine size={18} />
                     </button>
                   </div>
@@ -464,6 +457,13 @@ export default function ItemsPage() {
           </form>
         </div>
       )}
+
+      <ScannerModal
+        open={scanOpen}
+        onClose={() => setScanOpen(false)}
+        onDetect={handleDetect}
+        title={scanMode === "field" ? "Scan barcode" : "Scan to find / add"}
+      />
     </div>
   );
 }

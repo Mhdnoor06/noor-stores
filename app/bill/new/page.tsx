@@ -12,14 +12,15 @@ import {
   saveBill,
   uid,
 } from "@/lib/db";
-import { decodeImageFile } from "@/lib/scan";
 import { lookupProduct } from "@/lib/product-lookup";
 import { Bill, BillLine, Item } from "@/lib/types";
 import { buildReceipt, money } from "@/lib/escpos";
 import { useBluetooth } from "@/components/PrinterProvider";
-import ItemCard from "@/components/ItemCard";
+import { useToast } from "@/components/Toast";
+import PickerRow from "@/components/PickerRow";
 import BillItem from "@/components/BillItem";
 import PageHeader from "@/components/PageHeader";
+import ScannerModal from "@/components/ScannerModal";
 import {
   ScanLine,
   Search,
@@ -29,6 +30,7 @@ import {
   Wallet,
   Smartphone,
   CreditCard,
+  Package,
 } from "lucide-react";
 
 type Pay = "cash" | "upi" | "card";
@@ -36,6 +38,7 @@ type Pay = "cash" | "upi" | "card";
 export default function NewBillPage() {
   const router = useRouter();
   const { isConnected, supported, connect, print, status } = useBluetooth();
+  const toast = useToast();
 
   const [items, setItems] = useState<Item[]>([]);
   const [query, setQuery] = useState("");
@@ -47,44 +50,28 @@ export default function NewBillPage() {
   const [pay, setPay] = useState<Pay>("cash");
   const [paid, setPaid] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-  const [decoding, setDecoding] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
+  // Mobile only: focus one job at a time instead of cramming everything in.
+  const [mobileView, setMobileView] = useState<"items" | "cart">("items");
   const [qa, setQa] = useState<{ barcode: string; name: string; size: string; price: string } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     getItems().then(setItems).catch(() => setItems([]));
+    // Keep the search box focused so a USB/Bluetooth scanner "just works":
+    // scan → digits land here → Enter adds the item.
+    searchRef.current?.focus();
   }, []);
-
-  function openCamera() {
-    setMsg("");
-    fileRef.current?.click();
-  }
-
-  async function handleScanFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    setDecoding(true);
-    setMsg("");
-    try {
-      const code = await decodeImageFile(file);
-      if (code) await handleBillScan(code);
-      else setMsg("Couldn't read that barcode — keep it flat and sharp, then snap again.");
-    } catch {
-      setMsg("Couldn't read that image. Try again.");
-    } finally {
-      setDecoding(false);
-    }
-  }
 
   async function handleBillScan(code: string) {
     const found = items.find((i) => i.barcode === code);
     if (found) {
       addItem(found);
-      setMsg(`Added ${found.name}`);
+      toast(`Added ${found.name}`, "ok");
       return;
     }
+    // Unknown product — drop out of the live scanner to capture name & price.
+    setScanOpen(false);
     setQa({ barcode: code, name: "", size: "", price: "" });
     const info = await lookupProduct(code);
     if (info)
@@ -102,10 +89,10 @@ export default function NewBillPage() {
       await upsertItem(item);
       setItems((prev) => [item, ...prev]);
       addItem(item);
-      setMsg(`Added & saved ${name}`);
+      toast(`Added & saved ${name}`, "ok");
       setQa(null);
     } catch (err: unknown) {
-      setMsg(`${err instanceof Error ? err.message : "Couldn't save item."}`);
+      toast(err instanceof Error ? err.message : "Couldn't save item.", "error");
     }
   }
 
@@ -118,7 +105,11 @@ export default function NewBillPage() {
     const target = exact || filtered[0];
     if (target) {
       addItem(target);
+      toast(`Added ${target.name}`, "ok");
       setQuery("");
+      searchRef.current?.focus();
+    } else {
+      toast(`No item matches “${q}”`, "error");
     }
   }
 
@@ -132,6 +123,12 @@ export default function NewBillPage() {
       ),
     [items, query]
   );
+
+  const qtyById = useMemo(() => {
+    const m = new Map<string, number>();
+    lines.forEach((l) => m.set(l.itemId, l.qty));
+    return m;
+  }, [lines]);
 
   const subtotal = useMemo(() => lines.reduce((s, l) => s + l.price * l.qty, 0), [lines]);
   const discountNum = Math.min(subtotal, Math.max(0, parseFloat(discount) || 0));
@@ -173,7 +170,6 @@ export default function NewBillPage() {
     setLines([]);
     setDiscount("");
     setPaid("");
-    setMsg("");
   }
 
   async function buildBill(): Promise<Bill> {
@@ -203,16 +199,15 @@ export default function NewBillPage() {
       recordSale(saleLines()).catch(() => {});
       router.push("/bills");
     } catch (err: unknown) {
-      setMsg(`${err instanceof Error ? err.message : String(err)}`);
+      toast(err instanceof Error ? err.message : String(err), "error");
       setBusy(false);
     }
   }
 
   async function handlePrint() {
     if (lines.length === 0) return;
-    setMsg("");
     if (!isConnected) {
-      setMsg("Printer not connected — connect first, then print.");
+      toast("Printer not connected — connect it first.", "error");
       return;
     }
     setBusy(true);
@@ -222,10 +217,10 @@ export default function NewBillPage() {
       await print(buildReceipt(bill, settings));
       await saveBill(bill);
       recordSale(saleLines()).catch(() => {});
-      setMsg("Printed & saved.");
+      toast("Printed & saved.", "ok");
       setTimeout(() => router.push("/bills"), 700);
     } catch (err: unknown) {
-      setMsg(`${err instanceof Error ? err.message : String(err)}`);
+      toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setBusy(false);
     }
@@ -251,24 +246,49 @@ export default function NewBillPage() {
         }
       />
 
+      {/* Mobile: two focused tabs instead of everything stacked at once */}
+      <div className="flex gap-1.5 rounded-tile border border-line-input bg-white p-1 lg:hidden">
+        <button
+          onClick={() => setMobileView("items")}
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-[7px] py-2 text-sm font-semibold transition ${
+            mobileView === "items" ? "bg-brand text-white shadow-brand" : "text-muted-dark"
+          }`}
+        >
+          <Package size={15} /> Items
+        </button>
+        <button
+          onClick={() => setMobileView("cart")}
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-[7px] py-2 text-sm font-semibold transition ${
+            mobileView === "cart" ? "bg-brand text-white shadow-brand" : "text-muted-dark"
+          }`}
+        >
+          <ShoppingCart size={15} /> Cart
+          {count > 0 && (
+            <span className={`ml-0.5 rounded-full px-1.5 text-[11px] ${mobileView === "cart" ? "bg-white/25" : "bg-brand-soft text-brand"}`}>
+              {count}
+            </span>
+          )}
+          {lines.length > 0 && <span className="opacity-80">· {money(total)}</span>}
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
         {/* LEFT: item picker */}
-        <div className="space-y-3 lg:col-span-3">
-          <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={handleScanFile} className="hidden" />
+        <div className={`space-y-3 lg:col-span-3 lg:block ${mobileView === "items" ? "block" : "hidden"}`}>
           <div className="flex gap-2">
-            <button onClick={openCamera} disabled={decoding} className="btn-primary flex-1">
-              <ScanLine size={18} />
-              {decoding ? "Reading…" : "Scan barcode"}
+            <button onClick={() => setScanOpen(true)} className="btn-primary flex-1">
+              <ScanLine size={18} /> Scan barcode
             </button>
           </div>
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-light" />
             <input
+              ref={searchRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleSearchKey}
               className="input pl-10"
-              placeholder="Search or scan-gun a barcode, then Enter…"
+              placeholder="Search, or scan with a USB/Bluetooth scanner…"
             />
           </div>
           {items.length === 0 ? (
@@ -281,16 +301,30 @@ export default function NewBillPage() {
           ) : filtered.length === 0 ? (
             <div className="card p-8 text-center text-sm text-muted-light">No matches for “{query}”.</div>
           ) : (
-            <div className="grid max-h-[64vh] grid-cols-2 gap-2.5 overflow-auto pb-1 sm:grid-cols-3 xl:grid-cols-4">
+            <div className="max-h-[62vh] space-y-2 overflow-auto pb-1">
               {filtered.map((i) => (
-                <ItemCard key={i.id} item={i} onAdd={addItem} />
+                <PickerRow
+                  key={i.id}
+                  item={i}
+                  qty={qtyById.get(i.id) || 0}
+                  onAdd={addItem}
+                  onDec={(it) => changeQty(it.id, -1)}
+                />
               ))}
             </div>
+          )}
+
+          {/* Mobile: jump to the bill once items are in */}
+          {lines.length > 0 && (
+            <button onClick={() => setMobileView("cart")} className="btn-primary w-full lg:hidden">
+              <ShoppingCart size={17} /> Review &amp; pay · {money(total)}
+            </button>
           )}
         </div>
 
         {/* RIGHT: checkout */}
-        <div className="space-y-4 lg:col-span-2 lg:sticky lg:top-6 lg:self-start">
+        <div className={`space-y-4 lg:col-span-2 lg:sticky lg:top-6 lg:self-start lg:block ${mobileView === "cart" ? "block" : "hidden"}`}>
+
           {/* cart */}
           <div className="card overflow-hidden">
             <div className="flex items-center justify-between border-b border-line-soft px-4 py-3">
@@ -417,10 +451,6 @@ export default function NewBillPage() {
             </>
           )}
 
-          {msg && (
-            <div className="rounded-tile bg-ink px-3.5 py-2.5 text-sm font-medium text-white animate-pop">{msg}</div>
-          )}
-
           {/* actions */}
           <div className="flex flex-wrap gap-3">
             {!isConnected && supported && (
@@ -438,6 +468,14 @@ export default function NewBillPage() {
           </div>
         </div>
       </div>
+
+      <ScannerModal
+        open={scanOpen}
+        onClose={() => setScanOpen(false)}
+        onDetect={handleBillScan}
+        keepOpen
+        title="Scan items into bill"
+      />
 
       {/* quick-add modal */}
       {qa && (

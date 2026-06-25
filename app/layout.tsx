@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { PrinterProvider } from "@/components/PrinterProvider";
+import { ToastProvider } from "@/components/Toast";
 import Sidebar from "@/components/Sidebar";
 import { MobileTopBar, MobileBottomNav } from "@/components/MobileNav";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
@@ -49,16 +50,18 @@ export default function RootLayout({
       <body className="min-h-screen bg-canvas font-sans text-ink antialiased">
         <ServiceWorkerRegister />
         <PrinterProvider>
-          <div className="flex min-h-screen">
-            <Sidebar />
-            <div className="flex min-w-0 flex-1 flex-col">
-              <MobileTopBar />
-              <main className="mx-auto w-full max-w-[1320px] flex-1 px-4 py-6 pb-24 lg:px-8 lg:pb-10">
-                {children}
-              </main>
+          <ToastProvider>
+            <div className="flex min-h-screen">
+              <Sidebar />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <MobileTopBar />
+                <main className="mx-auto w-full max-w-[1320px] flex-1 px-4 py-6 pb-24 lg:px-8 lg:pb-10">
+                  {children}
+                </main>
+              </div>
             </div>
-          </div>
-          <MobileBottomNav />
+            <MobileBottomNav />
+          </ToastProvider>
         </PrinterProvider>
       </body>
     </html>

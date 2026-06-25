@@ -2,7 +2,7 @@ import { BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 
 // Retail 1D formats + TRY_HARDER so ZXing works harder per image.
-const HINTS = new Map<DecodeHintType, unknown>([
+export const HINTS = new Map<DecodeHintType, unknown>([
   [DecodeHintType.TRY_HARDER, true],
   [
     DecodeHintType.POSSIBLE_FORMATS,
@@ -43,14 +43,19 @@ async function decodeRobust(url: string): Promise<string | null> {
     /* try enhanced variants below */
   }
 
+  // Each pass = a target width (the engine often reads better at a different
+  // scale) + a contrast/grayscale boost. Crucially we also *upscale* small
+  // shots to ~1500px — budget phones in low-res mode produce images ZXing can't
+  // read at native size but decode fine once enlarged.
   const variants = [
-    { maxW: 1600, filter: "grayscale(1) contrast(1.6)" },
-    { maxW: 1200, filter: "grayscale(1) contrast(2)" },
-    { maxW: 2000, filter: "grayscale(1) contrast(1.4) brightness(1.05)" },
-    { maxW: 900, filter: "grayscale(1) contrast(2.4)" },
+    { targetW: 1500, filter: "grayscale(1) contrast(1.6)" },
+    { targetW: 1200, filter: "grayscale(1) contrast(2)" },
+    { targetW: 2000, filter: "grayscale(1) contrast(1.4) brightness(1.05)" },
+    { targetW: 1800, filter: "grayscale(1) contrast(2.2)" },
+    { targetW: 900, filter: "grayscale(1) contrast(2.4)" },
   ];
   for (const v of variants) {
-    const canvas = drawToCanvas(img, v.maxW, v.filter);
+    const canvas = drawToCanvas(img, v.targetW, v.filter);
     try {
       return reader.decodeFromCanvas(canvas).getText();
     } catch {
@@ -69,23 +74,24 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
+// Scales the image to `targetW` (up or down, preserving aspect, capped to keep
+// the canvas sane) and applies a CSS filter while drawing.
 function drawToCanvas(
   img: HTMLImageElement,
-  maxW: number,
+  targetW: number,
   filter: string
 ): HTMLCanvasElement {
-  let w = img.naturalWidth;
-  let h = img.naturalHeight;
-  if (w > maxW) {
-    h = Math.round((h * maxW) / w);
-    w = maxW;
-  }
+  const base = img.naturalWidth || targetW;
+  const w = Math.min(2400, Math.max(1, Math.round(targetW)));
+  const h = Math.round((img.naturalHeight / base) * w);
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
   if (ctx) {
     ctx.filter = filter;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, 0, 0, w, h);
   }
   return canvas;
