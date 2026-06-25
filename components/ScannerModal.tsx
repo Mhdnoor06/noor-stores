@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { BrowserMultiFormatReader, IScannerControls } from "@zxing/browser";
 import { HINTS, decodeImageFile } from "@/lib/scan";
+import { isValidEan13 } from "@/lib/barcode";
 import { X, Zap, ZapOff, Keyboard, Camera, ScanLine } from "lucide-react";
 
 // Format strings understood by the native BarcodeDetector (ML Kit / CoreImage).
@@ -55,6 +56,9 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
   const controlsRef = useRef<IScannerControls | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastRef = useRef<{ code: string; at: number }>({ code: "", at: 0 });
+  // Confirmation buffer: a code must be read on consecutive frames before we
+  // trust it — kills single-frame misreads (wrong number → "add new product").
+  const pendingRef = useRef<{ code: string; count: number }>({ code: "", count: 0 });
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [err, setErr] = useState("");
@@ -66,7 +70,29 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
   const [flash, setFlash] = useState(false);
   const [lastCode, setLastCode] = useState("");
 
-  // Accept a decoded value, with debounce so one barcode isn't added repeatedly.
+  // Gate every raw frame decode: reject impossible reads, then require the same
+  // value twice in a row before accepting. A stray misread won't match the next
+  // frame, so it's dropped instead of charged/added.
+  const REQUIRED = 2;
+  function consider(raw: string) {
+    const code = (raw || "").trim();
+    if (!code) return;
+    // A 13-digit numeric must be a valid EAN-13 (check digit) — filters partials.
+    if (/^\d{13}$/.test(code) && !isValidEan13(code)) return;
+    const p = pendingRef.current;
+    if (code === p.code) p.count += 1;
+    else {
+      p.code = code;
+      p.count = 1;
+    }
+    if (p.count >= REQUIRED) {
+      p.code = "";
+      p.count = 0;
+      accept(code);
+    }
+  }
+
+  // Accept a confirmed value, with debounce so one barcode isn't added repeatedly.
   function accept(code: string) {
     code = (code || "").trim();
     if (!code) return;
@@ -89,6 +115,8 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
     setErr("");
     setManual(false);
     setLastCode("");
+    pendingRef.current = { code: "", count: 0 };
+    lastRef.current = { code: "", at: 0 };
 
     (async () => {
       try {
@@ -157,7 +185,7 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
         busy = true;
         try {
           const codes = await detector.detect(v);
-          if (codes && codes[0]) accept(String(codes[0].rawValue));
+          if (codes && codes[0]) consider(String(codes[0].rawValue));
         } catch {
           /* transient frame error — keep going */
         }
@@ -172,7 +200,7 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
     const reader = new BrowserMultiFormatReader(HINTS);
     reader
       .decodeFromStream(stream, v, (result) => {
-        if (result) accept(result.getText());
+        if (result) consider(result.getText());
       })
       .then((c) => {
         controlsRef.current = c;
