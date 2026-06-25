@@ -5,6 +5,7 @@ import { getBills, getSettings } from "@/lib/db";
 import { Bill } from "@/lib/types";
 import { buildReceipt, money } from "@/lib/escpos";
 import { useBluetooth } from "@/components/PrinterProvider";
+import { useToast } from "@/components/Toast";
 import PageHeader from "@/components/PageHeader";
 import { Printer } from "lucide-react";
 import { qtyLabel } from "@/lib/units";
@@ -17,29 +18,39 @@ function fmt(epoch: number): string {
   )}:${pad(d.getMinutes())}`;
 }
 
+// Compact "Cash+UPI · Udhaar ₹300" summary for the collapsed row.
+function paySummary(b: Bill): string {
+  const parts: string[] = [];
+  if (b.payment?.cash) parts.push("Cash");
+  if (b.payment?.upi) parts.push("UPI");
+  if (b.payment?.card) parts.push("Card");
+  let s = parts.join("+");
+  if ((b.credit ?? 0) > 0) s = s ? `${s} · Udhaar ${money(b.credit!)}` : `Udhaar ${money(b.credit!)}`;
+  return s || "—";
+}
+
 export default function BillsPage() {
   const [bills, setBills] = useState<Bill[]>([]);
   const [open, setOpen] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [msg, setMsg] = useState("");
   const { isConnected, print, connect, supported, status } = useBluetooth();
+  const toast = useToast();
 
   useEffect(() => {
     getBills().then(setBills).catch(() => setBills([]));
   }, []);
 
   async function reprint(bill: Bill) {
-    setMsg("");
     if (!isConnected) {
-      setMsg("Printer not connected — connect first.");
+      toast("Printer not connected — connect first.", "error");
       return;
     }
     setBusyId(bill.id);
     try {
       await print(buildReceipt(bill, await getSettings()));
-      setMsg(`Reprinted bill #${bill.number}`);
+      toast(`Reprinted bill #${bill.number}`, "ok");
     } catch (err: unknown) {
-      setMsg(`${err instanceof Error ? err.message : String(err)}`);
+      toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setBusyId(null);
     }
@@ -63,12 +74,6 @@ export default function BillsPage() {
         }
       />
 
-      {msg && (
-        <div className="rounded-[10px] bg-ink px-3.5 py-2.5 text-sm font-medium text-white animate-pop">
-          {msg}
-        </div>
-      )}
-
       {bills.length === 0 ? (
         <div className="card border-dashed p-10 text-center text-sm text-muted-light">
           No bills yet.
@@ -88,11 +93,17 @@ export default function BillsPage() {
                   <p className="truncate text-sm font-semibold text-ink">
                     {b.customerName || `Bill #${b.number}`}
                   </p>
-                  <p className="text-xs text-muted-light">{fmt(b.createdAt)}</p>
+                  <p className="truncate text-xs text-muted-light">
+                    {fmt(b.createdAt)} · {paySummary(b)}
+                  </p>
                 </div>
                 <div className="text-right">
                   <p className="font-bold text-ink">{money(b.total)}</p>
-                  <p className="text-xs text-muted-light">{b.lines.length} items</p>
+                  {(b.credit ?? 0) > 0 ? (
+                    <span className="pill bg-amber-soft text-amber-deep">Udhaar</span>
+                  ) : (
+                    <p className="text-xs text-muted-light">{b.lines.length} items</p>
+                  )}
                 </div>
               </button>
 
@@ -127,6 +138,23 @@ export default function BillsPage() {
                     <span className="font-bold">Total</span>
                     <span className="font-bold text-brand">{money(b.total)}</span>
                   </div>
+
+                  {/* payment breakdown */}
+                  <div className="mt-2 space-y-1 border-t border-dashed border-line pt-2 text-sm">
+                    {(b.payment?.cash ?? 0) + (b.changeGiven ?? 0) > 0 && (
+                      <PayLine label="Cash" value={money((b.payment?.cash ?? 0) + (b.changeGiven ?? 0))} />
+                    )}
+                    {(b.payment?.upi ?? 0) > 0 && <PayLine label="UPI" value={money(b.payment!.upi)} />}
+                    {(b.payment?.card ?? 0) > 0 && <PayLine label="Card" value={money(b.payment!.card)} />}
+                    {(b.changeGiven ?? 0) > 0 && <PayLine label="Change returned" value={money(b.changeGiven!)} />}
+                    {(b.credit ?? 0) > 0 && (
+                      <div className="flex justify-between font-semibold text-amber-deep">
+                        <span>Balance (Udhaar){b.customerName ? ` · ${b.customerName}` : ""}</span>
+                        <span>{money(b.credit!)}</span>
+                      </div>
+                    )}
+                  </div>
+
                   <button
                     onClick={() => reprint(b)}
                     disabled={busyId === b.id}
@@ -141,6 +169,15 @@ export default function BillsPage() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function PayLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between text-muted">
+      <span>{label}</span>
+      <span className="font-medium text-ink">{value}</span>
     </div>
   );
 }

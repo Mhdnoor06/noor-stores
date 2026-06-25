@@ -182,14 +182,18 @@ export function buildReceipt(bill: Bill, settings: Settings): Uint8Array {
   b.line(twoCol("TOTAL:", money(bill.total), Math.floor(w / 2)));
   b.large(false).bold(false);
 
-  // payment line
-  const pm = bill.paymentMethod ?? "cash";
-  const pmLabel = pm === "upi" ? "UPI" : pm === "card" ? "Card" : "Cash";
-  if (pm === "cash" && bill.amountPaid != null && bill.amountPaid >= bill.total) {
-    b.line(twoCol("Paid (Cash):", money(bill.amountPaid), w));
-    b.line(twoCol("Change:", money(bill.amountPaid - bill.total), w));
-  } else {
-    b.line(twoCol("Paid:", pmLabel, w));
+  // payment breakdown (cash / UPI / card split, change, udhaar balance)
+  const pay = bill.payment ?? { cash: 0, upi: 0, card: 0 };
+  const change = bill.changeGiven ?? 0;
+  const credit = bill.credit ?? 0;
+  const cashTendered = pay.cash + change; // show what was handed over
+  if (cashTendered > 0) b.line(twoCol("Cash:", money(cashTendered), w));
+  if (pay.upi > 0) b.line(twoCol("UPI:", money(pay.upi), w));
+  if (pay.card > 0) b.line(twoCol("Card:", money(pay.card), w));
+  if (change > 0) b.line(twoCol("Change:", money(change), w));
+  if (credit > 0) {
+    b.bold(true).line(twoCol("Balance (Udhaar):", money(credit), w)).bold(false);
+    if (bill.customerName) b.line(`On account: ${bill.customerName}`);
   }
   b.line(rule(w, "="));
 
@@ -216,6 +220,53 @@ export function buildLabels(items: Item[]): Uint8Array {
     b.feed(3);
   }
   b.cut();
+  return b.build();
+}
+
+// Daily sales summary for a day-close / cash reconciliation.
+export interface DaySummary {
+  dateLabel: string;
+  billCount: number;
+  salesTotal: number;
+  cashSales: number;
+  upiSales: number;
+  cardSales: number;
+  creditGiven: number;
+  discountTotal: number;
+  repayCash: number;
+  repayUpi: number;
+  repayCard: number;
+}
+
+export function buildDaySummary(s: DaySummary, settings: Settings): Uint8Array {
+  const w = settings.paperWidth || 32;
+  const b = new EscPosBuilder();
+  b.init().align("center").bold(true).large(true).line("DAY CLOSE").large(false);
+  if (settings.businessName) b.line(settings.businessName);
+  b.bold(false).line(s.dateLabel).line(rule(w, "="));
+
+  b.align("left");
+  b.line(twoCol("Bills:", String(s.billCount), w));
+  b.bold(true).line(twoCol("Total sales:", money(s.salesTotal), w)).bold(false);
+  if (s.discountTotal > 0) b.line(twoCol("Discounts given:", money(s.discountTotal), w));
+  b.line(rule(w));
+
+  const cashIn = s.cashSales + s.repayCash;
+  const upiIn = s.upiSales + s.repayUpi;
+  const cardIn = s.cardSales + s.repayCard;
+  b.line("COLLECTED");
+  b.line(twoCol("Cash:", money(cashIn), w));
+  b.line(twoCol("UPI:", money(upiIn), w));
+  b.line(twoCol("Card:", money(cardIn), w));
+  b.bold(true).line(twoCol("Total in hand:", money(cashIn + upiIn + cardIn), w)).bold(false);
+  b.line(rule(w));
+
+  b.line("UDHAAR (credit)");
+  b.line(twoCol("Given today:", money(s.creditGiven), w));
+  b.line(twoCol("Collected today:", money(s.repayCash + s.repayUpi + s.repayCard), w));
+  b.line(rule(w, "="));
+
+  b.align("center").line(`Printed ${formatDate(Date.now())}`).feed(3).cut();
   return b.build();
 }
 

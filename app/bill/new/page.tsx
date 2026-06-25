@@ -6,14 +6,14 @@ import Link from "next/link";
 import {
   getItems,
   upsertItem,
-  recordSale,
+  commitSale,
   getSettings,
   nextBillNumber,
-  saveBill,
+  getUpiQrs,
   uid,
 } from "@/lib/db";
 import { lookupProduct } from "@/lib/product-lookup";
-import { Bill, BillLine, Item } from "@/lib/types";
+import { Bill, BillLine, Item, UpiQr } from "@/lib/types";
 import { buildReceipt, money } from "@/lib/escpos";
 import { useBluetooth } from "@/components/PrinterProvider";
 import { useToast } from "@/components/Toast";
@@ -21,6 +21,7 @@ import PickerRow from "@/components/PickerRow";
 import BillItem from "@/components/BillItem";
 import PageHeader from "@/components/PageHeader";
 import ScannerModal from "@/components/ScannerModal";
+import UpiQrModal from "@/components/UpiQrModal";
 import {
   ScanLine,
   Search,
@@ -31,9 +32,9 @@ import {
   Smartphone,
   CreditCard,
   Package,
+  Check,
+  QrCode,
 } from "lucide-react";
-
-type Pay = "cash" | "upi" | "card";
 
 export default function NewBillPage() {
   const router = useRouter();
@@ -47,10 +48,13 @@ export default function NewBillPage() {
   const [customerPhone, setCustomerPhone] = useState("");
   const [discount, setDiscount] = useState("");
   const [roundOn, setRoundOn] = useState(true);
-  const [pay, setPay] = useState<Pay>("cash");
-  const [paid, setPaid] = useState("");
+  const [payCash, setPayCash] = useState("");
+  const [payUpi, setPayUpi] = useState("");
+  const [payCard, setPayCard] = useState("");
   const [busy, setBusy] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [upiQrs, setUpiQrs] = useState<UpiQr[]>([]);
   // Mobile only: focus one job at a time instead of cramming everything in.
   const [mobileView, setMobileView] = useState<"items" | "cart">("items");
   const [qa, setQa] = useState<{ barcode: string; name: string; size: string; price: string } | null>(null);
@@ -58,6 +62,7 @@ export default function NewBillPage() {
 
   useEffect(() => {
     getItems().then(setItems).catch(() => setItems([]));
+    getUpiQrs().then(setUpiQrs).catch(() => {});
     // Keep the search box focused so a USB/Bluetooth scanner "just works":
     // scan → digits land here → Enter adds the item.
     searchRef.current?.focus();
@@ -137,15 +142,34 @@ export default function NewBillPage() {
   const roundOff = +(total - afterDiscount).toFixed(2);
   const count = useMemo(() => lines.reduce((s, l) => s + l.qty, 0), [lines]);
 
-  const paidNum = parseFloat(paid) || 0;
-  const change = pay === "cash" && paidNum > 0 ? Math.max(0, paidNum - total) : 0;
-  const short = pay === "cash" && paidNum > 0 && paidNum < total ? total - paidNum : 0;
+  const cashNum = parseFloat(payCash) || 0;
+  const upiNum = parseFloat(payUpi) || 0;
+  const cardNum = parseFloat(payCard) || 0;
+  const paidNum = +(cashNum + upiNum + cardNum).toFixed(2);
+  const change = Math.max(0, +(paidNum - total).toFixed(2));
+  const balanceDue = Math.max(0, +(total - paidNum).toFixed(2));
+  const needsCustomer = balanceDue > 0;
 
   const cashOptions = useMemo(() => {
     const t = Math.ceil(total);
     const set = new Set<number>([t, Math.ceil(t / 50) * 50, Math.ceil(t / 100) * 100, 100, 200, 500, 2000]);
     return Array.from(set).filter((v) => v >= t && v > 0).sort((a, b) => a - b).slice(0, 4);
   }, [total]);
+
+  // Set one method to exactly cover whatever is still unpaid.
+  function payRest(method: "cash" | "upi" | "card") {
+    const others = paidNum - (method === "cash" ? cashNum : method === "upi" ? upiNum : cardNum);
+    const rest = Math.max(0, +(total - others).toFixed(2));
+    const v = rest ? String(rest) : "";
+    if (method === "cash") setPayCash(v);
+    else if (method === "upi") setPayUpi(v);
+    else setPayCard(v);
+  }
+  function clearPayments() {
+    setPayCash("");
+    setPayUpi("");
+    setPayCard("");
+  }
 
   function addItem(item: Item) {
     setLines((prev) => {
@@ -169,10 +193,15 @@ export default function NewBillPage() {
   function clearCart() {
     setLines([]);
     setDiscount("");
-    setPaid("");
+    clearPayments();
+    setCustomerName("");
+    setCustomerPhone("");
   }
 
   async function buildBill(): Promise<Bill> {
+    const r2 = (n: number) => +n.toFixed(2);
+    // Change is returned from the cash tendered, so the recorded cash is net.
+    const netCash = Math.max(0, r2(cashNum - change));
     return {
       id: uid(),
       number: await nextBillNumber(),
@@ -184,20 +213,39 @@ export default function NewBillPage() {
       discount: discountNum,
       roundOff,
       total,
-      paymentMethod: pay,
-      amountPaid: pay === "cash" && paidNum > 0 ? paidNum : total,
+      payment: { cash: netCash, upi: r2(upiNum), card: r2(cardNum) },
+      credit: balanceDue,
+      changeGiven: change,
     };
   }
   const saleLines = () => lines.map((l) => ({ itemId: l.itemId, qty: l.qty }));
 
+  // Blocks checkout when a balance is on credit but no customer is named.
+  function checkoutBlocked(): string | null {
+    if (needsCustomer && !customerName.trim())
+      return `Enter a customer name — ₹${balanceDue} will go on udhaar.`;
+    return null;
+  }
+
   async function handleSaveOnly() {
     if (lines.length === 0 || busy) return;
+    const block = checkoutBlocked();
+    if (block) {
+      toast(block, "error");
+      setMobileView("cart");
+      return;
+    }
     setBusy(true);
     try {
       const bill = await buildBill();
-      await saveBill(bill);
-      recordSale(saleLines()).catch(() => {});
-      router.push("/bills");
+      const { synced } = await commitSale(bill, saleLines());
+      if (synced) {
+        router.push("/bills");
+      } else {
+        toast(`Saved offline (#${bill.number}) — will sync when online.`, "info");
+        clearCart();
+        setBusy(false);
+      }
     } catch (err: unknown) {
       toast(err instanceof Error ? err.message : String(err), "error");
       setBusy(false);
@@ -206,6 +254,12 @@ export default function NewBillPage() {
 
   async function handlePrint() {
     if (lines.length === 0) return;
+    const block = checkoutBlocked();
+    if (block) {
+      toast(block, "error");
+      setMobileView("cart");
+      return;
+    }
     if (!isConnected) {
       toast("Printer not connected — connect it first.", "error");
       return;
@@ -214,23 +268,21 @@ export default function NewBillPage() {
     try {
       const bill = await buildBill();
       const settings = await getSettings();
-      await print(buildReceipt(bill, settings));
-      await saveBill(bill);
-      recordSale(saleLines()).catch(() => {});
-      toast("Printed & saved.", "ok");
-      setTimeout(() => router.push("/bills"), 700);
+      await print(buildReceipt(bill, settings)); // local Bluetooth — works offline
+      const { synced } = await commitSale(bill, saleLines());
+      if (synced) {
+        toast("Printed & saved.", "ok");
+        setTimeout(() => router.push("/bills"), 700);
+      } else {
+        toast(`Printed. Saved offline (#${bill.number}) — syncs when online.`, "info");
+        clearCart();
+        setBusy(false);
+      }
     } catch (err: unknown) {
       toast(err instanceof Error ? err.message : String(err), "error");
-    } finally {
       setBusy(false);
     }
   }
-
-  const PAY_OPTS: { id: Pay; label: string; Icon: typeof Wallet }[] = [
-    { id: "cash", label: "Cash", Icon: Wallet },
-    { id: "upi", label: "UPI", Icon: Smartphone },
-    { id: "card", label: "Card", Icon: CreditCard },
-  ];
 
   return (
     <div className="space-y-5">
@@ -384,71 +436,89 @@ export default function NewBillPage() {
           </div>
 
           {lines.length > 0 && (
-            <>
-              {/* payment */}
-              <div className="card space-y-3 p-4">
+            <div className="card space-y-3 p-4">
+              <div className="flex items-center justify-between">
                 <span className="eyebrow">Payment</span>
-                <div className="flex gap-1.5 rounded-tile border border-line-input bg-white p-1">
-                  {PAY_OPTS.map(({ id, label, Icon }) => (
-                    <button
-                      key={id}
-                      onClick={() => setPay(id)}
-                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-[7px] py-2 text-sm font-semibold transition ${
-                        pay === id ? "bg-brand text-white shadow-brand" : "text-muted-dark hover:bg-canvas"
-                      }`}
-                    >
-                      <Icon size={15} /> {label}
-                    </button>
-                  ))}
-                </div>
-
-                {pay === "cash" && (
-                  <div className="space-y-2.5">
-                    <div className="flex flex-wrap gap-1.5">
-                      <button onClick={() => setPaid(String(total))} className="rounded-md border border-line-input bg-white px-2.5 py-1.5 text-xs font-semibold text-muted-dark hover:bg-canvas">
-                        Exact
-                      </button>
-                      {cashOptions.map((v) => (
-                        <button key={v} onClick={() => setPaid(String(v))} className="rounded-md border border-line-input bg-white px-2.5 py-1.5 text-xs font-semibold text-muted-dark hover:bg-canvas">
-                          ₹{v}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted">Cash received</span>
-                      <input
-                        value={paid}
-                        onChange={(e) => setPaid(e.target.value)}
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        inputMode="decimal"
-                        placeholder="0"
-                        className="h-9 w-28 rounded-[9px] border border-line-input bg-white px-2.5 text-right text-sm font-bold outline-none focus:border-brand"
-                      />
-                    </div>
-                    {change > 0 && (
-                      <div className="flex items-center justify-between rounded-tile bg-ok-soft px-3 py-2">
-                        <span className="text-sm font-semibold text-ok">Change to return</span>
-                        <span className="text-lg font-bold text-ok">{money(change)}</span>
-                      </div>
-                    )}
-                    {short > 0 && (
-                      <div className="flex items-center justify-between rounded-tile bg-amber-soft px-3 py-2 text-sm font-semibold text-amber-deep">
-                        <span>Still short</span>
-                        <span>{money(short)}</span>
-                      </div>
-                    )}
-                  </div>
+                {paidNum > 0 && (
+                  <button onClick={clearPayments} className="text-xs font-semibold text-muted-light hover:text-danger">
+                    Reset
+                  </button>
                 )}
               </div>
 
-              {/* customer */}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} className="input" placeholder="Customer name (optional)" />
-                <input value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} className="input" inputMode="tel" placeholder="Phone (optional)" />
+              {/* split across methods — fill any mix */}
+              <div className="space-y-2">
+                <MethodRow Icon={Wallet} label="Cash" value={payCash} onChange={setPayCash} onFull={() => payRest("cash")} />
+                <MethodRow Icon={Smartphone} label="UPI" value={payUpi} onChange={setPayUpi} onFull={() => payRest("upi")} />
+                <MethodRow Icon={CreditCard} label="Card" value={payCard} onChange={setPayCard} onFull={() => payRest("card")} />
               </div>
-            </>
+
+              {upiQrs.length > 0 && (
+                <button onClick={() => setQrOpen(true)} className="btn-soft h-10 w-full">
+                  <QrCode size={16} /> Show UPI QR to customer
+                </button>
+              )}
+
+              {/* cash quick amounts */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-muted-light">Cash:</span>
+                <button onClick={() => setPayCash(String(total))} className="rounded-md border border-line-input bg-white px-2.5 py-1 text-xs font-semibold text-muted-dark hover:bg-canvas">
+                  Exact
+                </button>
+                {cashOptions.map((v) => (
+                  <button key={v} onClick={() => setPayCash(String(v))} className="rounded-md border border-line-input bg-white px-2.5 py-1 text-xs font-semibold text-muted-dark hover:bg-canvas">
+                    ₹{v}
+                  </button>
+                ))}
+              </div>
+
+              {/* summary */}
+              <div className="space-y-1.5 border-t border-line-soft pt-2.5">
+                <Row label="Paid" value={money(paidNum)} />
+                {change > 0 && (
+                  <div className="flex items-center justify-between rounded-tile bg-ok-soft px-3 py-2">
+                    <span className="text-sm font-semibold text-ok">Change to return</span>
+                    <span className="text-lg font-bold text-ok">{money(change)}</span>
+                  </div>
+                )}
+                {balanceDue > 0 ? (
+                  <div className="flex items-center justify-between rounded-tile bg-amber-soft px-3 py-2">
+                    <span className="text-sm font-semibold text-amber-deep">Balance → udhaar</span>
+                    <span className="text-lg font-bold text-amber-deep">{money(balanceDue)}</span>
+                  </div>
+                ) : (
+                  total > 0 && (
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-ok">
+                      <Check size={14} /> Fully paid
+                    </p>
+                  )
+                )}
+              </div>
+
+              {/* customer — required when a balance goes on credit */}
+              <div className="space-y-2 border-t border-line-soft pt-2.5">
+                {needsCustomer && (
+                  <p className="text-xs font-semibold text-amber-deep">
+                    Whose udhaar? Name needed for the {money(balanceDue)} balance.
+                  </p>
+                )}
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <input
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    className={`input ${needsCustomer && !customerName.trim() ? "border-amber ring-2 ring-amber/20" : ""}`}
+                    placeholder={needsCustomer ? "Customer name *" : "Customer name (optional)"}
+                  />
+                  <input
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    className="input"
+                    inputMode="tel"
+                    placeholder="Phone (optional)"
+                  />
+                </div>
+              </div>
+            </div>
           )}
 
           {/* actions */}
@@ -475,6 +545,13 @@ export default function NewBillPage() {
         onDetect={handleBillScan}
         keepOpen
         title="Scan items into bill"
+      />
+
+      <UpiQrModal
+        open={qrOpen}
+        onClose={() => setQrOpen(false)}
+        qrs={upiQrs}
+        amount={upiNum > 0 ? upiNum : Math.max(0, +(total - cashNum - cardNum).toFixed(2))}
       />
 
       {/* quick-add modal */}
@@ -513,6 +590,45 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between text-sm">
       <span className="text-muted">{label}</span>
       <span className="font-semibold text-ink">{value}</span>
+    </div>
+  );
+}
+
+function MethodRow({
+  Icon,
+  label,
+  value,
+  onChange,
+  onFull,
+}: {
+  Icon: typeof Wallet;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onFull: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="flex w-[72px] flex-none items-center gap-1.5 text-sm font-semibold text-muted-dark">
+        <Icon size={15} /> {label}
+      </span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        type="number"
+        min="0"
+        step="0.01"
+        inputMode="decimal"
+        placeholder="0"
+        className="h-9 flex-1 rounded-[9px] border border-line-input bg-white px-2.5 text-right text-sm font-bold outline-none focus:border-brand"
+      />
+      <button
+        type="button"
+        onClick={onFull}
+        className="flex-none rounded-md border border-line-input px-2 py-1.5 text-[11px] font-semibold text-muted-dark hover:bg-canvas"
+      >
+        Full
+      </button>
     </div>
   );
 }

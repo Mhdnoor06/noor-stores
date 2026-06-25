@@ -5,6 +5,7 @@ import { ToastProvider } from "@/components/Toast";
 import Sidebar from "@/components/Sidebar";
 import { MobileTopBar, MobileBottomNav } from "@/components/MobileNav";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
+import OfflineSync from "@/components/OfflineSync";
 
 export const metadata: Metadata = {
   title: "Noor POS — Billing",
@@ -61,6 +62,7 @@ export default function RootLayout({
               </div>
             </div>
             <MobileBottomNav />
+            <OfflineSync />
           </ToastProvider>
         </PrinterProvider>
       </body>

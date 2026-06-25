@@ -25,19 +25,61 @@ export interface BillLine {
   qty: number; // count, or measured amount for kg/g/L/ml
 }
 
+// A bill can be settled by any mix of cash/UPI/card, with any unpaid remainder
+// (`credit`) carried on a customer's udhaar ledger.
+export interface BillPayment {
+  cash: number;
+  upi: number;
+  card: number;
+}
+
 export interface Bill {
   id: string;
   number: number; // human-friendly sequential bill no.
   createdAt: number; // epoch ms
   customerName?: string;
   customerPhone?: string;
+  customerId?: string; // set when a balance is put on credit
   lines: BillLine[];
   subtotal?: number; // sum of line amounts before discount
   discount?: number; // amount knocked off
   roundOff?: number; // rounding adjustment (+/-)
   total: number; // final payable
+  payment: BillPayment; // amount settled per method
+  credit?: number; // balance left on udhaar (0 if fully paid)
+  changeGiven?: number; // cash change returned on overpayment
+  // Legacy single-method fields, kept optional for older saved bills.
   paymentMethod?: "cash" | "upi" | "card";
-  amountPaid?: number; // tendered (cash) or = total
+  amountPaid?: number;
+}
+
+// An udhaar customer with a running outstanding balance (positive = owes shop).
+export interface Customer {
+  id: string;
+  name: string;
+  phone?: string;
+  balance: number;
+  createdAt: number;
+}
+
+// One line in a customer's credit ledger. +amount = udhaar given on a bill,
+// -amount = a repayment received.
+export interface CreditEntry {
+  id: string;
+  customerId: string;
+  billId?: string;
+  amount: number;
+  method?: "cash" | "upi" | "card";
+  note?: string;
+  createdAt: number;
+}
+
+// A saved UPI payment QR image (data URL) to show customers at checkout.
+export interface UpiQr {
+  id: string;
+  label: string;
+  image: string; // data URL (e.g. data:image/png;base64,...)
+  createdAt: number;
 }
 
 export interface Settings {

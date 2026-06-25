@@ -1,15 +1,47 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getSettings, saveSettings } from "@/lib/db";
-import { DEFAULT_SETTINGS, Settings } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import { getSettings, saveSettings, getUpiQrs, addUpiQr, deleteUpiQr } from "@/lib/db";
+import { DEFAULT_SETTINGS, Settings, UpiQr } from "@/lib/types";
 import { useBluetooth } from "@/components/PrinterProvider";
+import { useToast } from "@/components/Toast";
 import PageHeader from "@/components/PageHeader";
-import { Printer, Check } from "lucide-react";
+import { Printer, Check, QrCode, Upload, Trash2 } from "lucide-react";
+
+// Down-scales an uploaded image to a crisp-but-small PNG data URL for storage.
+function fileToDataUrl(file: File, max = 640): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, max / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return reject(new Error("canvas unavailable"));
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.onerror = () => reject(new Error("invalid image"));
+      img.src = reader.result as string;
+    };
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [saved, setSaved] = useState(false);
+  const [qrs, setQrs] = useState<UpiQr[]>([]);
+  const [qrLabel, setQrLabel] = useState("");
+  const [qrBusy, setQrBusy] = useState(false);
+  const qrFileRef = useRef<HTMLInputElement>(null);
+  const toast = useToast();
   const {
     supported,
     isConnected,
@@ -23,7 +55,35 @@ export default function SettingsPage() {
 
   useEffect(() => {
     getSettings().then(setSettings).catch(() => {});
+    getUpiQrs().then(setQrs).catch(() => {});
   }, []);
+
+  async function handleQrFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setQrBusy(true);
+    try {
+      const image = await fileToDataUrl(file);
+      await addUpiQr(qrLabel.trim() || `UPI QR ${qrs.length + 1}`, image);
+      setQrLabel("");
+      setQrs(await getUpiQrs());
+      toast("UPI QR added.", "ok");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Couldn't add QR.", "error");
+    } finally {
+      setQrBusy(false);
+    }
+  }
+  async function removeQr(id: string) {
+    if (!confirm("Remove this QR?")) return;
+    try {
+      await deleteUpiQr(id);
+      setQrs((s) => s.filter((q) => q.id !== id));
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Couldn't remove QR.", "error");
+    }
+  }
 
   function update<K extends keyof Settings>(key: K, value: Settings[K]) {
     setSettings((s) => ({ ...s, [key]: value }));
@@ -158,6 +218,49 @@ export default function SettingsPage() {
           )}
         </div>
       </form>
+
+      {/* UPI QR codes */}
+      <div className="card space-y-4 p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 flex-none items-center justify-center rounded-tile bg-canvas text-muted-dark">
+            <QrCode size={19} />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-ink">UPI payment QR codes</p>
+            <p className="text-xs text-muted">Add your GPay/PhonePe/Paytm QRs — show one to the customer when taking a UPI payment.</p>
+          </div>
+        </div>
+
+        <input ref={qrFileRef} type="file" accept="image/*" onChange={handleQrFile} className="hidden" />
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            value={qrLabel}
+            onChange={(e) => setQrLabel(e.target.value)}
+            className="input sm:flex-1"
+            placeholder="Label (e.g. GPay, PhonePe, Paytm)"
+          />
+          <button onClick={() => qrFileRef.current?.click()} disabled={qrBusy} className="btn-primary h-11">
+            <Upload size={16} /> {qrBusy ? "Adding…" : "Upload QR"}
+          </button>
+        </div>
+
+        {qrs.length === 0 ? (
+          <p className="text-xs text-muted-light">No QR codes yet.</p>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {qrs.map((q) => (
+              <div key={q.id} className="rounded-tile border border-line p-2 text-center">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={q.image} alt={q.label} className="mx-auto aspect-square w-full rounded-md object-contain" />
+                <p className="mt-1 truncate text-xs font-semibold text-ink">{q.label}</p>
+                <button onClick={() => removeQr(q.id)} className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-danger hover:underline">
+                  <Trash2 size={12} /> Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
