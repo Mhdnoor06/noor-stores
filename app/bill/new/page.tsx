@@ -307,12 +307,20 @@ export default function NewBillPage() {
     return null;
   }
 
-  // Picker tap: an item already in the cart just increments; a new multi-unit
-  // item asks which unit first; a single-unit item is added straight away.
+  // Picker tap / search:
+  // • already in the cart → just increment.
+  // • RETAIL mode → add the base item at the retail price straight away, no
+  //   prompt (the cashier can change price/unit on the cart line). A non-retail
+  //   product simply falls back to its base default price.
+  // • WHOLESALE mode → ask which unit when the item has more than one.
   function handlePick(item: Item) {
     const inCart = lines.some((l) => l.itemId === item.id);
     if (inCart) {
       addItem(item);
+      return;
+    }
+    if (!wholesale) {
+      addItem(item, "base");
       return;
     }
     const levels = sellLevelsOf(item, wholesale);
