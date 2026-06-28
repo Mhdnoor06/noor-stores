@@ -43,14 +43,18 @@ import {
 // A way the item can be sold: the base unit (loose) or one of its packs.
 type SellLevel = { id: string; label: string; unit: string; price: number; baseQty: number; measured: boolean };
 
-// Retail = ONE price per base unit; any bigger unit costs base × baseQty.
+// Retail = ONE price per base unit; bigger units cost base × baseQty — BUT only
+// when the product actually has a retail price. For a wholesale-only product
+// (no retail price) we never invent base×qty; we honour each unit's own price
+// (so a Box priced ₹730 stays ₹730, not sheet ₹14 × 60).
 // Wholesale = each unit has its own price, and a unit is only offered wholesale
-// when it has a wholesale price set. (Falls back to retail if nothing priced.)
+// when it has a wholesale price set.
 function sellLevelsOf(item: Item, wholesale: boolean): SellLevel[] {
   const out: SellLevel[] = [];
   const base = item.unit || "pcs";
-  // Retail base price, with a wholesale fallback so a wholesale-only item still
-  // prices (rather than reading ₹0) if billed in retail mode.
+  const hasRetail = (item.price ?? 0) > 0;
+  // Base price shown in retail: the retail price, or the base wholesale as a
+  // fallback so a wholesale-only item still prices (rather than reading ₹0).
   const retailBase = item.price || item.wholesalePrice || 0;
 
   if (item.sellLoose !== false) {
@@ -66,7 +70,13 @@ function sellLevelsOf(item: Item, wholesale: boolean): SellLevel[] {
       if (p.wholesalePrice == null) continue; // not sold wholesale at this size
       out.push({ id: p.id, label: p.label, unit: p.label, price: p.wholesalePrice, baseQty: p.baseQty, measured: false });
     } else {
-      out.push({ id: p.id, label: p.label, unit: p.label, price: retailBase * p.baseQty, baseQty: p.baseQty, measured: false });
+      // Retail pack price: base-retail × qty when a real retail price exists,
+      // otherwise the pack's own price (falling back to base × qty only if the
+      // pack itself was never priced).
+      const price = hasRetail
+        ? retailBase * p.baseQty
+        : p.wholesalePrice ?? retailBase * p.baseQty;
+      out.push({ id: p.id, label: p.label, unit: p.label, price, baseQty: p.baseQty, measured: false });
     }
   }
   if (out.length === 0) {
