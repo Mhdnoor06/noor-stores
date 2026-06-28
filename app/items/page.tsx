@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteItem,
   getItemByBarcode,
@@ -8,23 +8,37 @@ import {
   uid,
   upsertItem,
 } from "@/lib/db";
-import { Item } from "@/lib/types";
+import { Item, Pack } from "@/lib/types";
 import { money, buildLabels } from "@/lib/escpos";
 import { lookupProduct } from "@/lib/product-lookup";
-import { UNITS, CATEGORIES, perUnit } from "@/lib/units";
+import { CATEGORIES, perUnit, formatStock } from "@/lib/units";
+import { getUnitPresets, addUnitPreset, UnitPreset } from "@/lib/unit-presets";
 import { generateInternalBarcode } from "@/lib/barcode";
 import { useBluetooth } from "@/components/PrinterProvider";
 import PageHeader from "@/components/PageHeader";
 import Barcode from "@/components/Barcode";
 import ScannerModal from "@/components/ScannerModal";
-import { ScanLine, Search, Plus, Trash2, X, Sparkles, Printer, ChevronLeft, ChevronRight } from "lucide-react";
+import { ScanLine, Search, Plus, Trash2, X, Sparkles, Printer, ChevronLeft, ChevronRight, Check } from "lucide-react";
 
 const EMPTY = {
-  id: "", name: "", price: "", unit: "pcs", category: "", mrp: "", cost: "",
-  size: "", code: "", barcode: "", stock: "", reorder: "",
+  id: "", name: "", price: "", mrp: "", cost: "",
+  size: "", code: "", barcode: "", stock: "", reorder: "", category: "",
+};
+
+// One selected selling-unit row. The smallest (by baseQty) becomes the base
+// stock unit; the rest become packs. `wholesale` blank = not sold at this size.
+type UnitDraft = {
+  key: string;
+  label: string; // chip label / unit name shown to staff
+  unit: string; // unit string stored if this row is the base ("pcs", "kg", "case")
+  baseQty: string; // base units inside (ignored for the base row → forced 1)
+  wholesale: string; // wholesale price for this unit (blank = not sold wholesale)
+  barcode: string; // pack's own barcode (base uses the product barcode above)
+  atomic?: boolean; // true = an indivisible unit (pcs/kg/L) → wins a size tie as the base
 };
 
 const PAGE_SIZE = 20;
+const n = (s: string) => parseFloat(s);
 
 export default function ItemsPage() {
   const [items, setItems] = useState<Item[]>([]);
@@ -37,14 +51,57 @@ export default function ItemsPage() {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [scanOpen, setScanOpen] = useState(false);
-  // "list" = scan to find/add a product; "field" = scan to fill the form's barcode.
-  const [scanMode, setScanMode] = useState<"list" | "field">("list");
+  // "list" = scan to find/add a product; "field" = fill the form's barcode;
+  // "unit" = fill a selling-unit row's barcode.
+  const [scanMode, setScanMode] = useState<"list" | "field" | "unit">("list");
+  const [scanUnitKey, setScanUnitKey] = useState<string | null>(null);
+  // Selling units + pricing.
+  const [units, setUnits] = useState<UnitDraft[]>([]);
+  const [sellsRetail, setSellsRetail] = useState(true);
+  const [presets, setPresets] = useState<UnitPreset[]>([]);
+  // Inline "add custom unit" editor.
+  const [customLabel, setCustomLabel] = useState("");
+  const [customQty, setCustomQty] = useState("");
+  const [showCustom, setShowCustom] = useState(false);
+
   const nameRef = useRef<HTMLInputElement>(null);
   const priceRef = useRef<HTMLInputElement>(null);
   const editing = form.id !== "";
   const { isConnected, print, connect } = useBluetooth();
 
-  // Print the label for the item currently in the form (thermal printer).
+  useEffect(() => {
+    setPresets(getUnitPresets());
+  }, []);
+
+  // Selected units smallest → largest; the first is the base (stock) unit. On a
+  // size tie an atomic unit (Piece/kg) wins, so it never gets demoted to a pack.
+  const sortedUnits = useMemo(
+    () =>
+      [...units].sort((a, b) => {
+        const d = (n(a.baseQty) || 1) - (n(b.baseQty) || 1);
+        if (d !== 0) return d;
+        return (a.atomic ? 0 : 1) - (b.atomic ? 0 : 1);
+      }),
+    [units]
+  );
+  const baseUnit = sortedUnits[0];
+  const baseLabel = baseUnit?.label || "unit";
+  const baseUnitStr = baseUnit?.unit || "pcs";
+
+  // The chip palette: built-ins/customs, plus any unit already on this product
+  // whose label isn't a known preset (so edited custom packs still show as chips).
+  const palette = useMemo<UnitPreset[]>(() => {
+    const known = new Set(presets.map((p) => p.label.toLowerCase()));
+    const extra: UnitPreset[] = units
+      .filter((u) => !known.has(u.label.toLowerCase()))
+      .map((u) => ({ id: u.key, label: u.label, unit: u.unit, baseQty: n(u.baseQty) || 1 }));
+    return [...presets, ...extra];
+  }, [presets, units]);
+  const selectedLabels = useMemo(
+    () => new Set(units.map((u) => u.label.toLowerCase())),
+    [units]
+  );
+
   async function printLabel() {
     const bc = form.barcode.trim();
     if (!bc) return;
@@ -59,8 +116,8 @@ export default function ItemsPage() {
           {
             id: form.id || "tmp",
             name: form.name.trim() || "Item",
-            price: parseFloat(form.price) || 0,
-            unit: form.unit,
+            price: n(form.price) || 0,
+            unit: baseUnitStr,
             barcode: bc,
           },
         ])
@@ -84,41 +141,132 @@ export default function ItemsPage() {
     refresh();
   }, []);
 
-  function openAdd() {
+  function resetForm() {
     setForm(EMPTY);
+    setUnits([]);
+    setSellsRetail(true);
+    setShowCustom(false);
+    setCustomLabel("");
+    setCustomQty("");
+  }
+  function openAdd() {
+    resetForm();
+    // Start with a sensible default unit so the form is never empty.
+    setUnits([{ key: uid(), label: "Piece", unit: "pcs", baseQty: "1", wholesale: "", barcode: "", atomic: true }]);
     setErr("");
     setShowForm(true);
     setTimeout(() => nameRef.current?.focus(), 80);
   }
   function closeForm() {
     setShowForm(false);
-    setForm(EMPTY);
+    resetForm();
+  }
+
+  /* ---- selling units ---- */
+  function toggleUnit(p: UnitPreset) {
+    const has = units.find((u) => u.label.toLowerCase() === p.label.toLowerCase());
+    if (has) {
+      setUnits((us) => us.filter((u) => u.key !== has.key));
+    } else {
+      setUnits((us) => [
+        ...us,
+        { key: uid(), label: p.label, unit: p.unit, baseQty: String(p.baseQty), wholesale: "", barcode: "", atomic: p.atomic },
+      ]);
+    }
+  }
+  function patchUnit(key: string, p: Partial<UnitDraft>) {
+    setUnits((us) => us.map((u) => (u.key === key ? { ...u, ...p } : u)));
+  }
+  function removeUnit(key: string) {
+    setUnits((us) => us.filter((u) => u.key !== key));
+  }
+  function saveCustomUnit() {
+    const label = customLabel.trim();
+    const qty = n(customQty) || 1;
+    if (!label) return;
+    const next = addUnitPreset(label, qty);
+    setPresets(next);
+    const made = next.find((p) => p.label.toLowerCase() === label.toLowerCase());
+    if (made && !selectedLabels.has(made.label.toLowerCase())) toggleUnit(made);
+    setCustomLabel("");
+    setCustomQty("");
+    setShowCustom(false);
+  }
+  function openScanUnit(key: string) {
+    setErr("");
+    setScanMode("unit");
+    setScanUnitKey(key);
+    setScanOpen(true);
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const name = form.name.trim();
-    const price = parseFloat(form.price);
-    if (!name || isNaN(price) || price < 0) return;
+    if (!name) {
+      setErr("Enter a product name.");
+      return;
+    }
+    if (sortedUnits.length === 0) {
+      setErr("Pick at least one selling unit (e.g. Piece, Case).");
+      return;
+    }
+
+    const base = sortedUnits[0];
+    const baseStr = base.unit || "pcs";
+
+    // Build packs from every unit above the base.
+    const builtPacks: Pack[] = [];
+    for (const u of sortedUnits.slice(1)) {
+      const baseQty = n(u.baseQty);
+      if (isNaN(baseQty) || baseQty <= 1) {
+        setErr(`1 ${u.label} must equal more than 1 ${baseLabel} — set how many ${baseLabel} are in a ${u.label}.`);
+        return;
+      }
+      const wholesale = n(u.wholesale);
+      builtPacks.push({
+        id: u.key,
+        label: u.label.trim() || "Pack",
+        baseQty,
+        wholesalePrice: isNaN(wholesale) ? undefined : wholesale,
+        barcode: u.barcode.trim() || undefined,
+      });
+    }
+
+    // Retail = one base-unit price; wholesale = per-unit prices.
+    const retail = sellsRetail ? n(form.price) : 0;
+    if (sellsRetail && (isNaN(retail) || retail <= 0)) {
+      setErr(`Enter a retail price per ${baseLabel} (or turn off "Sell to retail").`);
+      return;
+    }
+    const baseWholesale = n(base.wholesale);
+    const hasWholesale =
+      (!isNaN(baseWholesale) && baseWholesale > 0) || builtPacks.some((p) => (p.wholesalePrice ?? 0) > 0);
+    if (!sellsRetail && !hasWholesale) {
+      setErr("Add a retail price, or a wholesale price for at least one unit.");
+      return;
+    }
+
     setSaving(true);
     setErr("");
-    // Every product ends up with a scannable barcode — auto-generate an
-    // internal one for items that didn't come with their own.
     const existing = new Set(items.map((i) => i.barcode).filter(Boolean) as string[]);
     const barcode = form.barcode.trim() || generateInternalBarcode(existing);
     const item: Item = {
       id: form.id || uid(),
       name,
-      price,
-      unit: form.unit || "pcs",
-      category: form.category.trim() || undefined,
-      mrp: parseFloat(form.mrp) || undefined,
-      costPrice: parseFloat(form.cost) || undefined,
+      price: isNaN(retail) ? 0 : retail,
+      wholesalePrice: !isNaN(baseWholesale) && baseWholesale > 0 ? baseWholesale : undefined,
+      unit: baseStr,
+      sellsRetail,
+      sellLoose: true, // the smallest selected unit is always a sell option
+      category: form.category?.trim() || undefined,
+      mrp: n(form.mrp) || undefined,
+      costPrice: n(form.cost) || undefined,
       size: form.size.trim() || undefined,
       code: form.code.trim() || undefined,
       barcode,
-      stock: parseInt(form.stock, 10) || 0,
-      reorderLevel: parseInt(form.reorder, 10) || 0,
+      stock: n(form.stock) || 0,
+      reorderLevel: n(form.reorder) || 0,
+      packs: builtPacks,
     };
     try {
       await upsertItem(item);
@@ -136,9 +284,7 @@ export default function ItemsPage() {
     setForm({
       id: item.id,
       name: item.name,
-      price: String(item.price),
-      unit: item.unit || "pcs",
-      category: item.category || "",
+      price: item.price ? String(item.price) : "",
       mrp: item.mrp ? String(item.mrp) : "",
       cost: item.costPrice ? String(item.costPrice) : "",
       size: item.size || "",
@@ -146,7 +292,35 @@ export default function ItemsPage() {
       barcode: item.barcode || "",
       stock: item.stock ? String(item.stock) : "",
       reorder: item.reorderLevel ? String(item.reorderLevel) : "",
+      category: item.category || "",
     });
+
+    const baseStr = item.unit || "pcs";
+    const all = getUnitPresets();
+    const basePreset = all.find((p) => p.unit === baseStr);
+    const baseRow: UnitDraft = {
+      key: "base",
+      label: basePreset?.label || baseStr,
+      unit: baseStr,
+      baseQty: "1",
+      wholesale: item.wholesalePrice != null ? String(item.wholesalePrice) : "",
+      barcode: "",
+      atomic: basePreset?.atomic,
+    };
+    const packRows: UnitDraft[] = (item.packs ?? []).map((p) => {
+      const pre = all.find((x) => x.label.toLowerCase() === p.label.toLowerCase());
+      return {
+        key: p.id,
+        label: p.label,
+        unit: pre?.unit || p.label.toLowerCase().replace(/\s+/g, "-"),
+        baseQty: String(p.baseQty),
+        wholesale: p.wholesalePrice != null ? String(p.wholesalePrice) : "",
+        barcode: p.barcode ?? "",
+        atomic: pre?.atomic,
+      };
+    });
+    setUnits([baseRow, ...packRows]);
+    setSellsRetail(item.sellsRetail ?? (item.price ?? 0) > 0);
     setErr("");
     setShowForm(true);
   }
@@ -171,6 +345,8 @@ export default function ItemsPage() {
         setMsg(`Barcode already saved — editing “${existing.name}”.`);
         return;
       }
+      resetForm();
+      setUnits([{ key: uid(), label: "Piece", unit: "pcs", baseQty: "1", wholesale: "", barcode: "", atomic: true }]);
       setForm({ ...EMPTY, barcode: code });
       setShowForm(true);
       setMsg(`New barcode ${code} — looking up product…`);
@@ -198,9 +374,9 @@ export default function ItemsPage() {
     setScanMode("field");
     setScanOpen(true);
   }
-  // Route a scanned code: into the form's barcode field, or to find/add a product.
   function handleDetect(code: string) {
     if (scanMode === "field") setForm((f) => ({ ...f, barcode: code }));
+    else if (scanMode === "unit" && scanUnitKey) patchUnit(scanUnitKey, { barcode: code });
     else handleScanned(code);
   }
 
@@ -216,7 +392,6 @@ export default function ItemsPage() {
   const safePage = Math.min(page, pageCount);
   const paged = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  // Reset to the first page whenever the search or the catalogue changes.
   useEffect(() => {
     setPage(1);
   }, [query, items.length]);
@@ -269,7 +444,7 @@ export default function ItemsPage() {
         </div>
       ) : (
         <>
-        <div className="card divide-y divide-line-soft overflow-hidden">
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
           {paged.map((i) => (
             <div
               key={i.id}
@@ -277,7 +452,7 @@ export default function ItemsPage() {
               role="button"
               tabIndex={0}
               onKeyDown={(e) => e.key === "Enter" && handleEdit(i)}
-              className="flex w-full cursor-pointer items-center gap-3 px-3.5 py-3 text-left hover:bg-canvas"
+              className="card flex cursor-pointer items-center gap-3 p-3.5 text-left transition hover:border-brand/40 hover:bg-canvas"
             >
               <div className="flex h-10 w-10 flex-none items-center justify-center rounded-tile bg-brand-soft text-sm font-bold text-brand">
                 {i.name.slice(0, 2).toUpperCase()}
@@ -293,10 +468,10 @@ export default function ItemsPage() {
               </div>
               <div className="flex flex-none flex-col items-end gap-1">
                 <p className="whitespace-nowrap text-sm font-bold text-ink">
-                  {money(i.price)}
-                  <span className="ml-0.5 text-[10.5px] font-normal text-muted-light">{perUnit(i.unit)}</span>
+                  {money(displayPrice(i).amount)}
+                  <span className="ml-0.5 text-[10.5px] font-normal text-muted-light">{displayPrice(i).suffix}</span>
                 </p>
-                <StockBadge stock={i.stock ?? 0} reorder={i.reorderLevel ?? 0} />
+                <StockBadge item={i} />
               </div>
             </div>
           ))}
@@ -349,6 +524,7 @@ export default function ItemsPage() {
             <div className="flex-1 space-y-5 overflow-auto px-5 py-5">
               {err && <Banner tone="danger">{err}</Banner>}
 
+              {/* 1. What is it */}
               <section className="space-y-3">
                 <span className="eyebrow">Product details</span>
                 <Field label="Name *">
@@ -378,7 +554,6 @@ export default function ItemsPage() {
                     <Sparkles size={13} /> Generate internal barcode
                   </button>
 
-                  {/* live barcode preview + print */}
                   {form.barcode.trim() ? (
                     <div className="mt-2 rounded-tile border border-line bg-white p-2">
                       <div className="flex justify-center">
@@ -394,45 +569,162 @@ export default function ItemsPage() {
                     </div>
                   ) : (
                     <p className="mt-1 text-[11px] text-muted-light">
-                      No barcode on the product? One is auto-generated on save — then you can print a label and scan it.
+                      No barcode on the product? One is auto-generated on save.
                     </p>
                   )}
                 </Field>
-                <Field label="SKU / HSN code">
-                  <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="input" placeholder="optional" />
-                </Field>
               </section>
 
+              {/* 2. Units this product is sold in */}
               <section className="space-y-3">
-                <span className="eyebrow">Pricing</span>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Sold by (unit) *">
-                    <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className="input">
-                      {UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
-                    </select>
-                  </Field>
-                  <Field label={`Selling price (${perUnit(form.unit)}) *`}>
-                    <input ref={priceRef} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} className="input" type="number" step="0.01" min="0" inputMode="decimal" placeholder="10.00" required />
-                  </Field>
-                  <Field label="MRP (₹)">
-                    <input value={form.mrp} onChange={(e) => setForm({ ...form, mrp: e.target.value })} className="input" type="number" step="0.01" min="0" inputMode="decimal" placeholder="optional" />
-                  </Field>
-                  <Field label="Cost price (₹)">
-                    <input value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} className="input" type="number" step="0.01" min="0" inputMode="decimal" placeholder="optional" />
-                  </Field>
+                <span className="eyebrow">Units sold in</span>
+                <p className="text-[11px] text-muted-light">
+                  Tap every size you sell. The smallest one is the base unit ({baseLabel}); stock is counted in it.
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {palette.map((p) => {
+                    const on = selectedLabels.has(p.label.toLowerCase());
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => toggleUnit(p)}
+                        className={`inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                          on
+                            ? "border-brand bg-brand text-white shadow-brand"
+                            : "border-line-input bg-white text-muted-dark hover:border-brand hover:text-brand"
+                        }`}
+                      >
+                        {on ? <Check size={12} strokeWidth={2.6} /> : <Plus size={12} />} {p.label}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => setShowCustom((s) => !s)}
+                    className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-input bg-white px-3 py-1.5 text-xs font-semibold text-muted-dark hover:border-brand hover:text-brand"
+                  >
+                    <Plus size={12} /> Add custom
+                  </button>
                 </div>
+
+                {showCustom && (
+                  <div className="flex flex-wrap items-end gap-2 rounded-tile border border-line-input bg-canvas/60 p-3">
+                    <label className="block flex-1">
+                      <span className="text-[11px] text-muted-light">Unit name</span>
+                      <input value={customLabel} onChange={(e) => setCustomLabel(e.target.value)} placeholder="e.g. Crate, Strip" className="input mt-0.5 h-9" />
+                    </label>
+                    <label className="block w-24">
+                      <span className="text-[11px] text-muted-light">{baseLabel}/unit</span>
+                      <input value={customQty} onChange={(e) => setCustomQty(e.target.value)} type="number" min="1" step="any" inputMode="decimal" placeholder="12" className="input mt-0.5 h-9 text-right" />
+                    </label>
+                    <button type="button" onClick={saveCustomUnit} className="btn-primary h-9 flex-none px-3">
+                      Add
+                    </button>
+                  </div>
+                )}
               </section>
 
+              {/* 3. Wholesale prices — one box per selected unit */}
               <section className="space-y-3">
-                <span className="eyebrow">Inventory</span>
+                <div className="flex items-center justify-between">
+                  <span className="eyebrow">Wholesale prices</span>
+                  <span className="text-[11px] text-muted-light">Fill what you sell · blank = skip</span>
+                </div>
+                {sortedUnits.length === 0 ? (
+                  <p className="rounded-tile border border-dashed border-line-input px-3 py-4 text-center text-xs text-muted-light">
+                    Pick a unit above first.
+                  </p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {sortedUnits.map((u, idx) => {
+                      const isBase = idx === 0;
+                      return (
+                        <div key={u.key} className="rounded-tile border border-line-input bg-white p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-ink">{u.label}</p>
+                              <p className="text-[11px] text-muted-light">
+                                {isBase ? `Base unit — stock is counted in ${u.label}` : `1 ${u.label} = ${u.baseQty || "?"} ${baseLabel}`}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs text-muted-light">₹</span>
+                              <input
+                                value={u.wholesale}
+                                onChange={(e) => patchUnit(u.key, { wholesale: e.target.value })}
+                                type="number" step="0.01" min="0" inputMode="decimal"
+                                placeholder="price"
+                                className="input h-9 w-24 text-right"
+                              />
+                              {!isBase && (
+                                <button type="button" onClick={() => removeUnit(u.key)} className="flex h-9 w-9 flex-none items-center justify-center rounded-tile border border-line-input text-muted-light hover:bg-canvas hover:text-danger" aria-label="Remove unit">
+                                  <Trash2 size={15} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {!isBase && (
+                            <div className="mt-2 grid grid-cols-2 gap-2">
+                              <label className="block">
+                                <span className="text-[11px] text-muted-light">How many {baseLabel} in 1 {u.label}?</span>
+                                <input value={u.baseQty} onChange={(e) => patchUnit(u.key, { baseQty: e.target.value })} type="number" step="any" min="0" inputMode="decimal" placeholder="12" className="input mt-0.5 h-9 text-right" />
+                              </label>
+                              <label className="block">
+                                <span className="text-[11px] text-muted-light">Pack barcode</span>
+                                <div className="mt-0.5 flex gap-1.5">
+                                  <input value={u.barcode} onChange={(e) => patchUnit(u.key, { barcode: e.target.value })} inputMode="numeric" placeholder="optional" className="input h-9 flex-1" />
+                                  <button type="button" onClick={() => openScanUnit(u.key)} className="btn-ghost h-9 flex-none px-2.5" aria-label="Scan pack barcode">
+                                    <ScanLine size={15} />
+                                  </button>
+                                </div>
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              {/* 4. Retail — one toggle, one price */}
+              <section className="space-y-3">
+                <span className="eyebrow">Retail</span>
+                <label className="flex cursor-pointer items-center justify-between rounded-tile border border-line-input px-3.5 py-2.5">
+                  <span className="text-sm font-medium text-ink">
+                    Sell to retail customers?
+                    <span className="block text-[11px] font-normal text-muted-light">One price per {baseLabel}, charged × quantity</span>
+                  </span>
+                  <input type="checkbox" checked={sellsRetail} onChange={(e) => setSellsRetail(e.target.checked)} className="h-5 w-5 flex-none accent-brand" />
+                </label>
+                {sellsRetail && (
+                  <Field label={`Retail price (per ${baseLabel}) *`}>
+                    <input ref={priceRef} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} className="input" type="number" step="0.01" min="0" inputMode="decimal" placeholder="5.00" />
+                  </Field>
+                )}
+              </section>
+
+              {/* 5. Inventory & cost */}
+              <section className="space-y-3">
+                <span className="eyebrow">Inventory &amp; cost</span>
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="Stock on hand">
+                  <Field label={`Stock on hand (${baseLabel})`}>
                     <input value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} className="input" type="number" step="any" min="0" inputMode="decimal" placeholder="0" />
                   </Field>
                   <Field label="Reorder level">
                     <input value={form.reorder} onChange={(e) => setForm({ ...form, reorder: e.target.value })} className="input" type="number" step="any" min="0" inputMode="decimal" placeholder="alert at ≤" />
                   </Field>
+                  <Field label={`Cost price (₹ / ${baseLabel})`}>
+                    <input value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} className="input" type="number" step="0.01" min="0" inputMode="decimal" placeholder="optional" />
+                  </Field>
+                  <Field label="MRP (₹)">
+                    <input value={form.mrp} onChange={(e) => setForm({ ...form, mrp: e.target.value })} className="input" type="number" step="0.01" min="0" inputMode="decimal" placeholder="optional" />
+                  </Field>
                 </div>
+                <Field label="SKU / HSN code">
+                  <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="input" placeholder="optional" />
+                </Field>
               </section>
             </div>
 
@@ -462,10 +754,19 @@ export default function ItemsPage() {
         open={scanOpen}
         onClose={() => setScanOpen(false)}
         onDetect={handleDetect}
-        title={scanMode === "field" ? "Scan barcode" : "Scan to find / add"}
+        title={scanMode === "unit" ? "Scan pack barcode" : scanMode === "field" ? "Scan barcode" : "Scan to find / add"}
       />
     </div>
   );
+}
+
+// What price to show on the list card: the retail price when sold retail, else
+// the base or first pack wholesale price (so wholesale-only items don't read ₹0).
+function displayPrice(i: Item): { amount: number; suffix: string } {
+  if ((i.price ?? 0) > 0) return { amount: i.price, suffix: perUnit(i.unit) };
+  if (i.wholesalePrice && i.wholesalePrice > 0) return { amount: i.wholesalePrice, suffix: perUnit(i.unit) };
+  const pk = (i.packs ?? []).find((p) => (p.wholesalePrice ?? 0) > 0);
+  return pk ? { amount: pk.wholesalePrice as number, suffix: `/ ${pk.label}` } : { amount: i.price ?? 0, suffix: perUnit(i.unit) };
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -482,13 +783,16 @@ function Banner({ tone, children }: { tone: "ok" | "danger"; children: React.Rea
   return <div className={`rounded-tile px-3.5 py-2.5 text-sm font-medium ${cls}`}>{children}</div>;
 }
 
-function StockBadge({ stock, reorder }: { stock: number; reorder: number }) {
+function StockBadge({ item }: { item: Item }) {
+  const stock = item.stock ?? 0;
+  const reorder = item.reorderLevel ?? 0;
   const out = stock <= 0;
   const low = reorder > 0 && stock <= reorder;
   const cls = out ? "bg-danger-soft text-danger" : low ? "bg-amber-soft text-amber-deep" : "bg-ok-soft text-ok";
+  const label = out ? "Out of stock" : `${formatStock(stock, item)} in stock`;
   return (
-    <span className={`rounded px-1.5 py-0.5 font-semibold ${cls}`}>
-      {out ? "Out of stock" : `${stock} in stock`}
+    <span title={`${stock} ${item.unit || "pcs"}`} className={`rounded px-1.5 py-0.5 font-semibold ${cls}`}>
+      {label}
     </span>
   );
 }

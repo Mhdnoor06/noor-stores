@@ -1,6 +1,11 @@
-// Looks up product info from a barcode using Open Food Facts (free, open,
-// no API key, CORS-enabled). Good coverage for branded packaged groceries
-// including Indian products. Returns null when the product isn't in the DB.
+// Looks up product info from a barcode using the Open Food Facts family of
+// databases (free, open, no API key, CORS-enabled). We query three in order so
+// non-food items (soap, shampoo, detergent, stationery) resolve too, not just
+// groceries:
+//   1. Open Food Facts      — groceries / packaged food
+//   2. Open Beauty Facts    — personal care (soap, shampoo, toothpaste, ...)
+//   3. Open Products Facts  — everything else (household, general goods)
+// Returns null when the barcode is in none of them.
 //
 // We deliberately build a SHORT name (brand + product type, e.g. "Aashirvaad
 // Atta", "Sunpure Oil") rather than the raw API name, which is often long and
@@ -13,16 +18,50 @@ export interface ProductInfo {
   quantity?: string;
 }
 
+const SOURCES = [
+  "https://world.openfoodfacts.org",
+  "https://world.openbeautyfacts.org",
+  "https://world.openproductsfacts.org",
+];
+
+// CLIENT: fast lookup via our own API route. The route queries all three
+// Open*Facts DBs in parallel server-side (one round-trip instead of up to
+// three) and caches results, so this is much snappier on mobile.
 export async function lookupProduct(
   barcode: string
 ): Promise<ProductInfo | null> {
   const code = barcode.trim();
   if (!code) return null;
   try {
+    const res = await fetch(`/api/lookup-product?code=${encodeURIComponent(code)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data && data.name ? (data as ProductInfo) : null;
+  } catch {
+    return null;
+  }
+}
+
+// SERVER: query the three Open*Facts databases concurrently and return the
+// best hit in priority order (food → beauty → products). Used by the API route.
+export async function resolveProduct(
+  barcode: string
+): Promise<ProductInfo | null> {
+  const code = barcode.trim();
+  if (!code) return null;
+  const results = await Promise.all(SOURCES.map((base) => lookupFrom(base, code)));
+  return results.find(Boolean) ?? null; // SOURCES are already in priority order
+}
+
+// Query one Open*Facts database. Returns null (so a miss/error just falls
+// through to the other sources) on a miss, network error, or unparseable name.
+async function lookupFrom(base: string, code: string): Promise<ProductInfo | null> {
+  try {
     const res = await fetch(
-      `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(
+      `${base}/api/v2/product/${encodeURIComponent(
         code
-      )}.json?fields=product_name,product_name_en,brands,categories,quantity`
+      )}.json?fields=product_name,product_name_en,generic_name,brands,categories,quantity`,
+      { headers: { "User-Agent": "NoorStores-POS/1.0 (kirana billing app)" } }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -34,7 +73,7 @@ export async function lookupProduct(
     const brand = titleCase(firstWords((p.brands || "").split(",")[0].trim(), 2));
     const quantity = (p.quantity || "").trim();
     const type = shortType(p.categories || "");
-    const rawName = (p.product_name_en || p.product_name || "").trim();
+    const rawName = (p.product_name_en || p.product_name || p.generic_name || "").trim();
 
     const name = buildShortName(brand, type, rawName);
     if (!name) return null;

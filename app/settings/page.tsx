@@ -98,7 +98,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="mx-auto w-full max-w-2xl space-y-5">
       <PageHeader
         title="Settings"
         subtitle="Shop details and printer connection."

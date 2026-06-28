@@ -17,6 +17,19 @@ body {
   background: #d9ddfa;
 }
 
+/* Drop the native number-input spin arrows everywhere — they invite accidental
+   value changes on a touch/mouse POS. Wheel-to-change is killed in JS by
+   <NumberInputGuard>. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

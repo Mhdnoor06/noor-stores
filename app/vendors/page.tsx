@@ -2,38 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  getCustomers,
-  getCreditLedger,
-  recordRepayment,
-  recordCharge,
-  addCustomer,
-  markReminded,
-  getDebtAges,
-  getSettings,
-  deleteCreditEntry,
+  getVendors,
+  getVendorLedger,
+  recordVendorPayment,
+  recordVendorCharge,
+  addVendor,
+  deleteVendorEntry,
 } from "@/lib/db";
-import { Customer, CreditEntry } from "@/lib/types";
+import { Vendor, VendorEntry } from "@/lib/types";
 import { money } from "@/lib/escpos";
-import { reminderLinks, statementLinks, canRemind } from "@/lib/reminders";
 import { useToast } from "@/components/Toast";
 import PageHeader from "@/components/PageHeader";
-import {
-  HandCoins,
-  Search,
-  X,
-  Wallet,
-  Smartphone,
-  CreditCard,
-  Phone,
-  UserPlus,
-  MessageCircle,
-  Send,
-  Clock,
-  Trash2,
-} from "lucide-react";
+import BillAttach, { BillThumb } from "@/components/BillAttach";
+import { Truck, Search, X, Wallet, Smartphone, CreditCard, Phone, UserPlus, Trash2, Package } from "lucide-react";
 
 type Method = "cash" | "upi" | "card";
-type Mode = "repay" | "charge";
+type Mode = "pay" | "charge";
 
 function fmt(epoch: number): string {
   const d = new Date(epoch);
@@ -41,75 +25,69 @@ function fmt(epoch: number): string {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${String(d.getFullYear()).slice(2)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function ageDays(start: number): number {
-  return Math.max(0, Math.floor((Date.now() - start) / 86400000));
-}
-
-function ageLabel(days: number): string {
-  if (days <= 0) return "today";
-  if (days === 1) return "1 day";
-  return `${days} days`;
-}
-
-export default function UdhaarPage() {
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [ages, setAges] = useState<Map<string, number>>(new Map());
-  const [businessName, setBusinessName] = useState("");
+export default function VendorsPage() {
+  const [vendors, setVendors] = useState<Vendor[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<Customer | null>(null);
-  const [ledger, setLedger] = useState<CreditEntry[]>([]);
+  const [selected, setSelected] = useState<Vendor | null>(null);
+  const [ledger, setLedger] = useState<VendorEntry[]>([]);
   const [loadingLedger, setLoadingLedger] = useState(false);
-  const [mode, setMode] = useState<Mode>("repay");
+  const [mode, setMode] = useState<Mode>("pay");
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<Method>("cash");
   const [note, setNote] = useState("");
+  const [bill, setBill] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [remindingId, setRemindingId] = useState<string | null>(null);
-  // Add-customer modal
+  // Add-vendor modal
   const [addOpen, setAddOpen] = useState(false);
   const [addName, setAddName] = useState("");
   const [addPhone, setAddPhone] = useState("");
-  const [addUdhaar, setAddUdhaar] = useState("");
+  const [addCompany, setAddCompany] = useState("");
+  const [addOwed, setAddOwed] = useState("");
   const [addBusy, setAddBusy] = useState(false);
   const toast = useToast();
 
   async function refresh() {
     try {
-      const list = await getCustomers();
-      setCustomers(list);
-      const oweIds = list.filter((c) => c.balance > 0).map((c) => c.id);
-      setAges(await getDebtAges(oweIds));
+      setVendors(await getVendors());
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed to load customers.", "error");
+      toast(e instanceof Error ? e.message : "Failed to load vendors.", "error");
     } finally {
       setLoading(false);
     }
   }
   useEffect(() => {
     refresh();
-    getSettings()
-      .then((s) => setBusinessName(s.businessName))
-      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const totalOutstanding = useMemo(() => customers.reduce((s, c) => s + Math.max(0, c.balance), 0), [customers]);
-  const withDues = useMemo(() => customers.filter((c) => c.balance > 0).length, [customers]);
+  const totalPayable = useMemo(() => vendors.reduce((s, v) => s + Math.max(0, v.balance), 0), [vendors]);
+  const withDues = useMemo(() => vendors.filter((v) => v.balance > 0).length, [vendors]);
 
-  const filtered = customers.filter(
-    (c) => c.name.toLowerCase().includes(query.toLowerCase()) || (c.phone || "").includes(query.trim())
+  const filtered = vendors.filter(
+    (v) =>
+      v.name.toLowerCase().includes(query.toLowerCase()) ||
+      (v.company || "").toLowerCase().includes(query.toLowerCase()) ||
+      (v.phone || "").includes(query.trim())
   );
 
-  async function openCustomer(c: Customer) {
-    setSelected(c);
-    setMode("repay");
-    setAmount(c.balance > 0 ? String(c.balance) : "");
+  // Existing vendors matching the name being typed in the Add modal.
+  const addNameMatches = useMemo(() => {
+    const q = addName.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return vendors.filter((v) => v.name.toLowerCase().includes(q)).slice(0, 4);
+  }, [vendors, addName]);
+
+  async function openVendor(v: Vendor) {
+    setSelected(v);
+    setMode("pay");
+    setAmount(v.balance > 0 ? String(v.balance) : "");
     setMethod("cash");
     setNote("");
+    setBill(undefined);
     setLoadingLedger(true);
     try {
-      setLedger(await getCreditLedger(c.id));
+      setLedger(await getVendorLedger(v.id));
     } catch {
       setLedger([]);
     } finally {
@@ -121,14 +99,12 @@ export default function UdhaarPage() {
     setLedger([]);
   }
 
-  // Re-pull customers + reopen the selected one so balance/ledger/age stay live.
   async function reload(selectedId?: string) {
-    const updated = await getCustomers();
-    setCustomers(updated);
-    setAges(await getDebtAges(updated.filter((c) => c.balance > 0).map((c) => c.id)));
+    const updated = await getVendors();
+    setVendors(updated);
     if (selectedId) {
-      const fresh = updated.find((c) => c.id === selectedId) || null;
-      if (fresh) await openCustomer(fresh);
+      const fresh = updated.find((v) => v.id === selectedId) || null;
+      if (fresh) await openVendor(fresh);
     }
   }
 
@@ -136,17 +112,17 @@ export default function UdhaarPage() {
     if (!selected) return;
     const amt = parseFloat(amount);
     if (isNaN(amt) || amt <= 0) {
-      toast(mode === "repay" ? "Enter a repayment amount." : "Enter an udhaar amount.", "error");
+      toast(mode === "pay" ? "Enter a payment amount." : "Enter an amount owed.", "error");
       return;
     }
     setBusy(true);
     try {
-      if (mode === "repay") {
-        await recordRepayment(selected.id, amt, method);
-        toast(`Received ${money(amt)} from ${selected.name}.`, "ok");
+      if (mode === "pay") {
+        await recordVendorPayment(selected.id, amt, method, undefined, bill);
+        toast(`Paid ${money(amt)} to ${selected.name}.`, "ok");
       } else {
-        await recordCharge(selected.id, amt, note.trim() || undefined);
-        toast(`Added ${money(amt)} udhaar for ${selected.name}.`, "ok");
+        await recordVendorCharge(selected.id, amt, note.trim() || undefined, bill);
+        toast(`Added ${money(amt)} payable for ${selected.name}.`, "ok");
       }
       await reload(selected.id);
     } catch (e) {
@@ -156,32 +132,11 @@ export default function UdhaarPage() {
     }
   }
 
-  async function sendReminder(c: Customer, e?: React.MouseEvent) {
-    e?.stopPropagation();
-    const links = reminderLinks(c, businessName);
-    if (!links) {
-      toast("Add a phone number to send a reminder.", "error");
-      return;
-    }
-    setRemindingId(c.id);
-    // Open the chat first (must be inside the click to dodge popup blockers).
-    window.open(links.whatsapp, "_blank");
+  async function deleteEntry(e: VendorEntry) {
+    const kindLabel = e.amount < 0 ? "payment" : "payable";
+    if (!window.confirm(`Delete this ${kindLabel} of ${money(Math.abs(e.amount))}? The vendor's balance will be adjusted back.`)) return;
     try {
-      await markReminded(c.id);
-      setCustomers((prev) => prev.map((x) => (x.id === c.id ? { ...x, lastRemindedAt: Date.now() } : x)));
-      if (selected?.id === c.id) setSelected({ ...selected, lastRemindedAt: Date.now() });
-    } catch {
-      /* opening the chat is what matters; the stamp is best-effort */
-    } finally {
-      setRemindingId(null);
-    }
-  }
-
-  async function deleteLedgerEntry(e: CreditEntry) {
-    const kindLabel = e.amount < 0 ? "repayment" : "udhaar";
-    if (!window.confirm(`Delete this ${kindLabel} of ${money(Math.abs(e.amount))}? The balance will be adjusted back.`)) return;
-    try {
-      await deleteCreditEntry(e);
+      await deleteVendorEntry(e);
       toast("Entry deleted.", "ok");
       if (selected) await reload(selected.id);
     } catch (err) {
@@ -189,36 +144,37 @@ export default function UdhaarPage() {
     }
   }
 
-  function sendStatement(c: Customer) {
-    const links = statementLinks(c, ledger, businessName);
-    if (!links) {
-      toast("Add a phone number to send a statement.", "error");
-      return;
-    }
-    window.open(links.whatsapp, "_blank");
-  }
-
   async function submitAdd() {
     const name = addName.trim();
     if (!name) {
-      toast("Enter a customer name.", "error");
+      toast("Enter a vendor name.", "error");
       return;
     }
-    const opening = parseFloat(addUdhaar);
+    // Don't create a second record for a vendor that already exists — open the
+    // existing one so the amount stacks onto their balance instead.
+    const dupe = vendors.find((v) => v.name.trim().toLowerCase() === name.toLowerCase());
+    if (dupe) {
+      setAddOpen(false);
+      toast(`${dupe.name} already exists — opening their account.`, "ok");
+      await openVendor(dupe);
+      return;
+    }
+    const opening = parseFloat(addOwed);
     setAddBusy(true);
     try {
-      const c = await addCustomer(name, addPhone.trim() || undefined);
+      const v = await addVendor(name, addPhone.trim() || undefined, { company: addCompany.trim() || undefined });
       if (!isNaN(opening) && opening > 0) {
-        await recordCharge(c.id, opening, "Opening balance");
+        await recordVendorCharge(v.id, opening, "Opening balance");
       }
       toast(`Added ${name}.`, "ok");
       setAddOpen(false);
       setAddName("");
       setAddPhone("");
-      setAddUdhaar("");
+      setAddCompany("");
+      setAddOwed("");
       await reload();
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed to add customer.", "error");
+      toast(e instanceof Error ? e.message : "Failed to add vendor.", "error");
     } finally {
       setAddBusy(false);
     }
@@ -226,16 +182,16 @@ export default function UdhaarPage() {
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-5">
-      <PageHeader title="Udhaar" subtitle="Customer credit — who owes you, and recording repayments." />
+      <PageHeader title="Vendors" subtitle="Suppliers you buy from — what you owe, and recording payments." />
 
       {/* summary */}
       <div className="grid grid-cols-2 gap-3">
         <div className="card p-4">
-          <p className="eyebrow">Total outstanding</p>
-          <p className="mt-1 text-2xl font-bold text-amber-deep">{money(totalOutstanding)}</p>
+          <p className="eyebrow">Total payable</p>
+          <p className="mt-1 text-2xl font-bold text-amber-deep">{money(totalPayable)}</p>
         </div>
         <div className="card p-4">
-          <p className="eyebrow">Customers with dues</p>
+          <p className="eyebrow">Vendors to pay</p>
           <p className="mt-1 text-2xl font-bold text-ink">{withDues}</p>
         </div>
       </div>
@@ -244,7 +200,7 @@ export default function UdhaarPage() {
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-light" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} className="input pl-10" placeholder="Search by name or phone…" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} className="input pl-10" placeholder="Search name, company or phone…" />
         </div>
         <button onClick={() => setAddOpen(true)} className="btn-primary flex-none gap-1.5 px-3.5">
           <UserPlus size={16} /> Add
@@ -256,51 +212,36 @@ export default function UdhaarPage() {
         <div className="card p-10 text-center text-sm text-muted-light">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="card flex flex-col items-center gap-3 p-12 text-center">
-          <HandCoins size={26} className="text-line-input" />
+          <Truck size={26} className="text-line-input" />
           <p className="text-sm text-muted">
-            {customers.length === 0 ? "No credit customers yet. Add one, or balances appear here when a bill is left partly unpaid." : "No matches."}
+            {vendors.length === 0 ? "No vendors yet. Add one, or they appear here when you record a stock-in on credit." : "No matches."}
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          {filtered.map((c) => {
-            const owes = c.balance > 0;
-            const start = ages.get(c.id);
+          {filtered.map((v) => {
+            const owes = v.balance > 0;
             return (
               <div
-                key={c.id}
+                key={v.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => openCustomer(c)}
-                onKeyDown={(e) => e.key === "Enter" && openCustomer(c)}
+                onClick={() => openVendor(v)}
+                onKeyDown={(e) => e.key === "Enter" && openVendor(v)}
                 className="card flex cursor-pointer items-center gap-3 p-3.5 text-left transition hover:border-brand/40 hover:bg-canvas"
               >
                 <div className="flex h-10 w-10 flex-none items-center justify-center rounded-tile bg-brand-soft text-sm font-bold text-brand">
-                  {c.name.slice(0, 2).toUpperCase()}
+                  {v.name.slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-ink">{c.name}</p>
-                  {c.phone && <p className="truncate text-[11.5px] text-muted-light">{c.phone}</p>}
+                  <p className="truncate text-sm font-semibold text-ink">{v.name}</p>
+                  <p className="truncate text-[11.5px] text-muted-light">{v.company || v.phone || "—"}</p>
                 </div>
-                {owes && canRemind(c) && (
-                  <button
-                    onClick={(e) => sendReminder(c, e)}
-                    disabled={remindingId === c.id}
-                    title="Send WhatsApp reminder"
-                    className="flex h-9 w-9 flex-none items-center justify-center rounded-tile border border-line-input text-ok hover:bg-ok-soft disabled:opacity-50"
-                  >
-                    <MessageCircle size={16} />
-                  </button>
-                )}
                 <div className="text-right">
-                  <p className={`text-sm font-bold ${owes ? "text-amber-deep" : "text-ok"}`}>{owes ? money(c.balance) : "Settled"}</p>
-                  {owes && start != null ? (
-                    <p className="flex items-center justify-end gap-1 text-[10.5px] text-muted-light">
-                      <Clock size={10} /> {ageLabel(ageDays(start))}
-                    </p>
-                  ) : owes ? (
-                    <p className="text-[10.5px] text-muted-light">outstanding</p>
-                  ) : null}
+                  <p className={`text-sm font-bold ${owes ? "text-amber-deep" : v.balance < 0 ? "text-brand" : "text-ok"}`}>
+                    {owes ? money(v.balance) : v.balance < 0 ? money(-v.balance) : "Settled"}
+                  </p>
+                  <p className="text-[10.5px] text-muted-light">{owes ? "to pay" : v.balance < 0 ? "advance" : ""}</p>
                 </div>
               </div>
             );
@@ -315,54 +256,42 @@ export default function UdhaarPage() {
             <div className="flex items-center justify-between border-b border-line px-5 py-4">
               <div className="min-w-0">
                 <p className="truncate text-base font-bold text-ink">{selected.name}</p>
-                {selected.phone && (
+                {selected.phone ? (
                   <a href={`tel:${selected.phone}`} className="flex items-center gap-1 text-xs text-brand">
                     <Phone size={12} /> {selected.phone}
                   </a>
-                )}
+                ) : selected.company ? (
+                  <p className="truncate text-xs text-muted-light">{selected.company}</p>
+                ) : null}
               </div>
-              <div className="flex items-center gap-1.5">
-                {canRemind(selected) && (
-                  <button
-                    onClick={() => sendReminder(selected)}
-                    disabled={remindingId === selected.id}
-                    className="flex items-center gap-1.5 rounded-tile bg-ok-soft px-3 py-2 text-xs font-semibold text-ok hover:brightness-95 disabled:opacity-50"
-                  >
-                    <MessageCircle size={14} /> Remind
-                  </button>
-                )}
-                <button onClick={closeDetail} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-light hover:bg-canvas">
-                  <X size={18} />
-                </button>
-              </div>
+              <button onClick={closeDetail} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-light hover:bg-canvas">
+                <X size={18} />
+              </button>
             </div>
 
             <div className="flex-1 space-y-5 overflow-auto px-5 py-5">
               {/* balance + action */}
               <div className="card space-y-3 p-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted">Outstanding</span>
+                  <span className="text-sm text-muted">Payable</span>
                   <span className={`text-xl font-bold ${selected.balance > 0 ? "text-amber-deep" : "text-ok"}`}>
                     {money(Math.max(0, selected.balance))}
                   </span>
                 </div>
-                {selected.lastRemindedAt && (
-                  <p className="text-[11px] text-muted-light">Reminded {fmt(selected.lastRemindedAt)}</p>
-                )}
 
-                {/* mode toggle: receive payment vs give udhaar */}
+                {/* mode toggle: pay vendor vs add payable */}
                 <div className="flex gap-1.5 rounded-tile border border-line-input bg-white p-1">
                   {(
                     [
-                      ["repay", "Receive payment"],
-                      ["charge", "Give udhaar"],
+                      ["pay", "Pay vendor"],
+                      ["charge", "Add payable"],
                     ] as const
                   ).map(([m, label]) => (
                     <button
                       key={m}
                       onClick={() => {
                         setMode(m);
-                        setAmount(m === "repay" && selected.balance > 0 ? String(selected.balance) : "");
+                        setAmount(m === "pay" && selected.balance > 0 ? String(selected.balance) : "");
                       }}
                       className={`flex-1 rounded-[7px] py-2 text-sm font-semibold transition ${
                         mode === m ? "bg-brand text-white shadow-brand" : "text-muted-dark hover:bg-canvas"
@@ -373,7 +302,7 @@ export default function UdhaarPage() {
                   ))}
                 </div>
 
-                {mode === "repay" && (
+                {mode === "pay" && (
                   <div className="flex gap-1.5 rounded-tile border border-line-input bg-white p-1">
                     {([["cash", Wallet], ["upi", Smartphone], ["card", CreditCard]] as const).map(([m, Icon]) => (
                       <button
@@ -400,7 +329,7 @@ export default function UdhaarPage() {
                     placeholder="Amount"
                     className="input flex-1 text-right font-bold"
                   />
-                  {mode === "repay" && selected.balance > 0 && (
+                  {mode === "pay" && selected.balance > 0 && (
                     <button onClick={() => setAmount(String(selected.balance))} className="btn-ghost h-11 flex-none px-3 text-xs">
                       Full
                     </button>
@@ -408,29 +337,19 @@ export default function UdhaarPage() {
                 </div>
 
                 {mode === "charge" && (
-                  <input
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
-                    placeholder="Note (optional) — e.g. groceries"
-                    className="input"
-                  />
+                  <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className="input" />
                 )}
 
+                <BillAttach value={bill} onChange={setBill} />
+
                 <button onClick={submitAction} disabled={busy} className="btn-primary w-full">
-                  {busy ? "Saving…" : mode === "repay" ? "Record payment" : "Add udhaar"}
+                  {busy ? "Saving…" : mode === "pay" ? "Record payment" : "Add payable"}
                 </button>
               </div>
 
               {/* ledger */}
               <div>
-                <div className="flex items-center justify-between">
-                  <span className="eyebrow">History</span>
-                  {selected.phone && ledger.length > 0 && (
-                    <button onClick={() => sendStatement(selected)} className="flex items-center gap-1 text-xs font-semibold text-brand hover:underline">
-                      <Send size={12} /> Send statement
-                    </button>
-                  )}
-                </div>
+                <span className="eyebrow">History</span>
                 {loadingLedger ? (
                   <p className="mt-2 text-sm text-muted-light">Loading…</p>
                 ) : ledger.length === 0 ? (
@@ -438,22 +357,29 @@ export default function UdhaarPage() {
                 ) : (
                   <div className="mt-2 space-y-1.5">
                     {ledger.map((e) => {
-                      const repay = e.amount < 0;
+                      const paid = e.amount < 0;
                       return (
                         <div key={e.id} className="flex items-center gap-2.5 rounded-tile border border-line-soft px-3 py-2 text-sm">
+                          {e.billImage && <BillThumb src={e.billImage} size={34} />}
                           <div className="min-w-0 flex-1">
                             <p className="truncate font-medium text-ink">
-                              {repay ? `Repayment${e.method ? ` · ${e.method.toUpperCase()}` : ""}` : e.note || "Udhaar"}
+                              {paid ? `Payment${e.method ? ` · ${e.method.toUpperCase()}` : ""}` : e.note || "Payable"}
                             </p>
                             <p className="text-[11px] text-muted-light">{fmt(e.createdAt)}</p>
                           </div>
-                          <span className={`flex-none font-bold ${repay ? "text-ok" : "text-amber-deep"}`}>
-                            {repay ? "−" : "+"}
+                          <span className={`flex-none font-bold ${paid ? "text-ok" : "text-amber-deep"}`}>
+                            {paid ? "−" : "+"}
                             {money(Math.abs(e.amount))}
                           </span>
-                          <button onClick={() => deleteLedgerEntry(e)} title="Delete entry" className="flex h-9 w-9 flex-none items-center justify-center rounded-md text-muted-light hover:bg-canvas hover:text-danger">
-                            <Trash2 size={14} />
-                          </button>
+                          {e.purchaseId ? (
+                            <span className="flex h-9 w-9 flex-none items-center justify-center" title="From a stock-in — delete it on the Stock In page">
+                              <Package size={13} className="text-muted-light" />
+                            </span>
+                          ) : (
+                            <button onClick={() => deleteEntry(e)} title="Delete entry" className="flex h-9 w-9 flex-none items-center justify-center rounded-md text-muted-light hover:bg-canvas hover:text-danger">
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       );
                     })}
@@ -465,23 +391,43 @@ export default function UdhaarPage() {
         </div>
       )}
 
-      {/* add-customer modal */}
+      {/* add-vendor modal */}
       {addOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center sm:p-4" onClick={() => !addBusy && setAddOpen(false)}>
           <div onClick={(e) => e.stopPropagation()} className="max-h-[90dvh] w-full space-y-4 overflow-y-auto rounded-t-2xl bg-white p-5 pb-[calc(env(safe-area-inset-bottom)+1.25rem)] shadow-pop sm:max-w-sm sm:rounded-card sm:pb-5">
             <div className="flex items-center justify-between">
-              <p className="text-base font-bold text-ink">Add customer</p>
+              <p className="text-base font-bold text-ink">Add vendor</p>
               <button onClick={() => !addBusy && setAddOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-md text-muted-light hover:bg-canvas">
                 <X size={18} />
               </button>
             </div>
             <div className="space-y-2.5">
               <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="Name" className="input" autoFocus />
-              <input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} placeholder="Phone (for reminders)" inputMode="tel" className="input" />
+              {addNameMatches.length > 0 && (
+                <div className="space-y-1 rounded-tile border border-amber/30 bg-amber-soft/50 p-2">
+                  <p className="px-1 text-[11px] font-semibold text-amber-deep">Already exists — tap to open instead:</p>
+                  {addNameMatches.map((v) => (
+                    <button
+                      key={v.id}
+                      onClick={async () => {
+                        setAddOpen(false);
+                        await openVendor(v);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-md bg-white px-2.5 py-1.5 text-left text-sm hover:bg-canvas"
+                    >
+                      <Truck size={13} className="text-muted-light" />
+                      <span className="flex-1 truncate">{v.name}</span>
+                      {v.balance > 0 && <span className="text-[11px] text-amber-deep">{money(v.balance)}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <input value={addCompany} onChange={(e) => setAddCompany(e.target.value)} placeholder="Company (optional)" className="input" />
+              <input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} placeholder="Phone (optional)" inputMode="tel" className="input" />
               <input
-                value={addUdhaar}
-                onChange={(e) => setAddUdhaar(e.target.value)}
-                placeholder="Opening udhaar (optional)"
+                value={addOwed}
+                onChange={(e) => setAddOwed(e.target.value)}
+                placeholder="Opening balance owed (optional)"
                 type="number"
                 min="0"
                 step="0.01"
@@ -490,7 +436,7 @@ export default function UdhaarPage() {
               />
             </div>
             <button onClick={submitAdd} disabled={addBusy} className="btn-primary w-full">
-              {addBusy ? "Saving…" : "Add customer"}
+              {addBusy ? "Saving…" : "Add vendor"}
             </button>
           </div>
         </div>

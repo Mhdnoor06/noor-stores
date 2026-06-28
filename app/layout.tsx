@@ -6,6 +6,7 @@ import Sidebar from "@/components/Sidebar";
 import { MobileTopBar, MobileBottomNav } from "@/components/MobileNav";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 import OfflineSync from "@/components/OfflineSync";
+import NumberInputGuard from "@/components/NumberInputGuard";
 
 export const metadata: Metadata = {
   title: "Noor POS — Billing",
@@ -50,6 +51,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen bg-canvas font-sans text-ink antialiased">
         <ServiceWorkerRegister />
+        <NumberInputGuard />
         <PrinterProvider>
           <ToastProvider>
             <div className="flex min-h-screen">

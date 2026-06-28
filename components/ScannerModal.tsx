@@ -4,10 +4,36 @@ import { useEffect, useRef, useState } from "react";
 import { BrowserMultiFormatReader, IScannerControls } from "@zxing/browser";
 import { HINTS, decodeImageFile } from "@/lib/scan";
 import { isValidEan13 } from "@/lib/barcode";
-import { X, Zap, ZapOff, Keyboard, Camera, ScanLine } from "lucide-react";
+import { X, Zap, ZapOff, Keyboard, Camera, ScanLine, SwitchCamera } from "lucide-react";
 
 // Format strings understood by the native BarcodeDetector (ML Kit / CoreImage).
 const BD_FORMATS = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf", "codabar"];
+
+// Remembered rear-lens choice per device (multi-camera phones — see boot()).
+const CAM_KEY = "noor-scanner-cam";
+
+// Narrow a device list to the rear-facing cameras (falls back to all when the
+// browser hides labels until permission is granted).
+function backCameras(cams: MediaDeviceInfo[]): MediaDeviceInfo[] {
+  const back = cams.filter((c) => /back|rear|environment/i.test(c.label));
+  return back.length ? back : cams;
+}
+
+// Choose the MAIN rear lens. Ultra-wide/telephoto/depth lenses are useless for
+// barcodes (ultra-wide has fixed focus → blurry up close). We drop obvious aux
+// lenses by label, then prefer the lowest-indexed back camera — on Samsung the
+// lenses are labelled "camera2 0/2/3, facing back" and 0 is the main shooter.
+function pickMain(back: MediaDeviceInfo[]): string | undefined {
+  if (back.length === 0) return undefined;
+  const aux = /(ultra|tele|depth|macro|mono|bokeh|infrared|\bir\b)/i;
+  const primary = back.filter((c) => !aux.test(c.label));
+  const pool = primary.length ? primary : back;
+  const idx = (l: string) => {
+    const m = l.match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : 999;
+  };
+  return [...pool].sort((a, b) => idx(a.label) - idx(b.label))[0]?.deviceId;
+}
 
 type Props = {
   open: boolean;
@@ -60,11 +86,14 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
   // trust it — kills single-frame misreads (wrong number → "add new product").
   const pendingRef = useRef<{ code: string; count: number }>({ code: "", count: 0 });
   const fileRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
 
   const [err, setErr] = useState("");
   const [engine, setEngine] = useState<"native" | "zxing" | "">("");
   const [torchOn, setTorchOn] = useState(false);
   const [torchAvail, setTorchAvail] = useState(false);
+  const [cams, setCams] = useState<MediaDeviceInfo[]>([]);
+  const [camIdx, setCamIdx] = useState(0);
   const [manual, setManual] = useState(false);
   const [manualVal, setManualVal] = useState("");
   const [flash, setFlash] = useState(false);
@@ -111,70 +140,140 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
     setErr("");
     setManual(false);
     setLastCode("");
     pendingRef.current = { code: "", count: 0 };
     lastRef.current = { code: "", at: 0 };
+    cancelledRef.current = false;
 
-    (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false,
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        streamRef.current = stream;
-        const v = videoRef.current;
-        if (!v) return;
-        v.srcObject = stream;
-        v.setAttribute("playsinline", "true");
-        await v.play().catch(() => {});
-
-        const track = stream.getVideoTracks()[0];
-        // Continuous autofocus is the single biggest fix for "blurry → won't scan".
-        try {
-          await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as unknown as MediaTrackConstraintSet] });
-        } catch {
-          /* not all cameras expose focusMode */
-        }
-        const caps = (track.getCapabilities?.() ?? {}) as { torch?: boolean };
-        setTorchAvail(!!caps.torch);
-
-        // Prefer the OS-accelerated detector (much faster on phones); fall back to ZXing.
-        const BD = (window as unknown as { BarcodeDetector?: BarcodeDetectorLike }).BarcodeDetector;
-        let useNative = false;
-        if (BD) {
-          try {
-            const sup = await BD.getSupportedFormats();
-            useNative = sup.includes("ean_13");
-          } catch {
-            useNative = false;
-          }
-        }
-        if (cancelled) return;
-        if (useNative && BD) {
-          setEngine("native");
-          runNative(BD, v);
-        } else {
-          setEngine("zxing");
-          runZxing(stream, v);
-        }
-      } catch (e) {
-        if (!cancelled) setErr(camError(e));
-      }
-    })();
+    boot();
 
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       stopAll();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Start the camera, picking the right rear lens. Multi-camera phones (e.g.
+  // Galaxy S21 FE) often hand `facingMode:environment` the ULTRA-WIDE lens,
+  // which has fixed focus and can't focus on a close barcode → blurry. So we
+  // open a stream, enumerate the back cameras, switch to the MAIN one, remember
+  // it, and expose a manual lens switch for the rare wrong guess.
+  async function boot() {
+    try {
+      const saved = localStorage.getItem(CAM_KEY) || undefined;
+      try {
+        await openCamera(saved);
+      } catch (e) {
+        // A stale/!available saved deviceId — forget it and let the OS pick.
+        if (saved) {
+          localStorage.removeItem(CAM_KEY);
+          await openCamera(undefined);
+        } else throw e;
+      }
+      if (cancelledRef.current) return;
+
+      let list: MediaDeviceInfo[] = [];
+      try {
+        list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+      } catch {
+        /* enumerate can fail; keep the working stream */
+      }
+      const back = backCameras(list);
+      setCams(back);
+
+      const curId = streamRef.current?.getVideoTracks()[0]?.getSettings().deviceId;
+      let activeId = curId;
+      // Auto-correct to the main lens only when the user hasn't chosen one.
+      if (!saved) {
+        const mainId = pickMain(back);
+        if (mainId && mainId !== curId) {
+          stopStream();
+          await openCamera(mainId);
+          if (cancelledRef.current) return;
+          activeId = mainId;
+        }
+      }
+      if (activeId) {
+        localStorage.setItem(CAM_KEY, activeId);
+        const i = back.findIndex((c) => c.deviceId === activeId);
+        if (i >= 0) setCamIdx(i);
+      }
+    } catch (e) {
+      if (!cancelledRef.current) setErr(camError(e));
+    }
+  }
+
+  // Open one camera (a specific lens by deviceId, else the rear camera) and
+  // attach it, then start the decode engine.
+  async function openCamera(deviceId?: string) {
+    const video: MediaTrackConstraints = deviceId
+      ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      : { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } };
+    const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+    if (cancelledRef.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    streamRef.current = stream;
+    const v = videoRef.current;
+    if (!v) return;
+    v.srcObject = stream;
+    v.setAttribute("playsinline", "true");
+    await v.play().catch(() => {});
+
+    const track = stream.getVideoTracks()[0];
+    // Continuous autofocus is the single biggest fix for "blurry → won't scan".
+    try {
+      await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as unknown as MediaTrackConstraintSet] });
+    } catch {
+      /* not all cameras expose focusMode */
+    }
+    const caps = (track.getCapabilities?.() ?? {}) as { torch?: boolean };
+    setTorchAvail(!!caps.torch);
+
+    await startEngine(stream, v);
+  }
+
+  // Prefer the OS-accelerated detector (much faster on phones); fall back to ZXing.
+  async function startEngine(stream: MediaStream, v: HTMLVideoElement) {
+    const BD = (window as unknown as { BarcodeDetector?: BarcodeDetectorLike }).BarcodeDetector;
+    let useNative = false;
+    if (BD) {
+      try {
+        const sup = await BD.getSupportedFormats();
+        useNative = sup.includes("ean_13");
+      } catch {
+        useNative = false;
+      }
+    }
+    if (cancelledRef.current) return;
+    if (useNative && BD) {
+      setEngine("native");
+      runNative(BD, v);
+    } else {
+      setEngine("zxing");
+      runZxing(stream, v);
+    }
+  }
+
+  // Cycle to the next rear lens (manual override when the auto-pick is wrong),
+  // and remember it for next time.
+  async function switchCam() {
+    if (cams.length < 2) return;
+    const next = (camIdx + 1) % cams.length;
+    const id = cams[next].deviceId;
+    setCamIdx(next);
+    localStorage.setItem(CAM_KEY, id);
+    stopStream();
+    try {
+      await openCamera(id);
+    } catch (e) {
+      if (!cancelledRef.current) setErr(camError(e));
+    }
+  }
 
   function runNative(BD: BarcodeDetectorLike, v: HTMLVideoElement) {
     const detector = new BD({ formats: BD_FORMATS });
@@ -208,7 +307,9 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
       .catch((e) => setErr(camError(e)));
   }
 
-  function stopAll() {
+  // Stop the live stream + decode loop (used when switching lenses) without
+  // tearing down modal-level UI state.
+  function stopStream() {
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -217,6 +318,10 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
     controlsRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+  }
+
+  function stopAll() {
+    stopStream();
     setTorchOn(false);
     setEngine("");
   }
@@ -289,6 +394,11 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
             <p className="absolute inset-x-0 top-3 text-center text-xs font-medium text-white/80">
               Point at the barcode — it scans automatically
             </p>
+            {cams.length > 1 && (
+              <p className="absolute inset-x-0 top-9 text-center text-[11px] text-white/55">
+                Blurry? Tap “Lens” below to switch cameras
+              </p>
+            )}
             {flash && (
               <div className="absolute inset-x-0 bottom-24 flex justify-center">
                 <span className="rounded-full bg-ok px-4 py-1.5 text-sm font-bold text-white shadow-lg animate-pop">
@@ -317,6 +427,15 @@ export default function ScannerModal({ open, onClose, onDetect, keepOpen, title 
 
       {/* bottom controls */}
       <div className="flex items-center justify-center gap-2 px-4 py-4">
+        {cams.length > 1 && !err && (
+          <button
+            onClick={switchCam}
+            className="btn h-11 border border-white/30 bg-white/10 px-4 text-white hover:bg-white/20"
+            title="Switch camera lens if the image is blurry"
+          >
+            <SwitchCamera size={17} /> Lens
+          </button>
+        )}
         {torchAvail && !err && (
           <button
             onClick={toggleTorch}

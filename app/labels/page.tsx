@@ -3,13 +3,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { getItems, upsertItem } from "@/lib/db";
 import { Item } from "@/lib/types";
-import { money, buildLabels } from "@/lib/escpos";
+import { money, buildLabelCards } from "@/lib/escpos";
 import { perUnit } from "@/lib/units";
 import { generateInternalBarcode, isInternalBarcode } from "@/lib/barcode";
 import { useBluetooth } from "@/components/PrinterProvider";
 import PageHeader from "@/components/PageHeader";
 import Barcode from "@/components/Barcode";
 import { Printer, FileDown, Sparkles, CheckSquare, Square } from "lucide-react";
+
+// A printable target — either an item's base unit or one of its packs. Packs
+// (cases/bundles) often have no barcode, so we mint internal ones and print
+// labels so they can be scanned at billing/stock-in.
+type Target = {
+  key: string;
+  itemId: string;
+  packId?: string;
+  name: string;
+  barcode?: string;
+  price: number;
+  unit?: string;
+};
 
 export default function LabelsPage() {
   const [items, setItems] = useState<Item[]>([]);
@@ -18,43 +31,81 @@ export default function LabelsPage() {
   const [msg, setMsg] = useState("");
   const { isConnected, print, connect, supported, status } = useBluetooth();
 
+  // Flatten the catalogue into label targets: base unit + each pack.
+  const targets = useMemo<Target[]>(() => {
+    const out: Target[] = [];
+    for (const i of items) {
+      out.push({ key: i.id, itemId: i.id, name: i.name, barcode: i.barcode, price: i.price, unit: i.unit });
+      for (const p of i.packs ?? []) {
+        out.push({
+          key: `${i.id}:${p.id}`,
+          itemId: i.id,
+          packId: p.id,
+          name: `${i.name} (${p.label})`,
+          barcode: p.barcode,
+          // Retail label price: base retail × pack size (older packs may still
+          // carry an explicit retailPrice).
+          price: p.retailPrice && p.retailPrice > 0 ? p.retailPrice : (i.price || 0) * p.baseQty,
+          unit: p.label,
+        });
+      }
+    }
+    return out;
+  }, [items]);
+
   async function refresh() {
     const data = await getItems();
     setItems(data);
-    setSelected(new Set(data.filter((i) => isInternalBarcode(i.barcode)).map((i) => i.id)));
   }
   useEffect(() => {
     refresh().catch(() => {});
   }, []);
 
-  // Only in-store ("20"-prefixed) barcodes need labels — products that came with
-  // their own printed barcode are skipped. `missing` = no barcode at all yet.
-  const labelled = useMemo(() => items.filter((i) => isInternalBarcode(i.barcode)), [items]);
-  const missing = useMemo(() => items.filter((i) => !i.barcode), [items]);
-  const chosen = labelled.filter((i) => selected.has(i.id));
+  // Pre-select every internal-barcoded target once items load.
+  useEffect(() => {
+    setSelected(new Set(targets.filter((t) => isInternalBarcode(t.barcode)).map((t) => t.key)));
+  }, [targets]);
 
-  function toggle(id: string) {
+  // Only in-store ("20"-prefixed) barcodes need labels — units/packs that came
+  // with their own printed barcode are skipped. `missing` = no barcode yet.
+  const labelled = useMemo(() => targets.filter((t) => isInternalBarcode(t.barcode)), [targets]);
+  const missing = useMemo(() => targets.filter((t) => !t.barcode), [targets]);
+  const chosen = labelled.filter((t) => selected.has(t.key));
+
+  function toggle(key: string) {
     setSelected((s) => {
       const n = new Set(s);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
       return n;
     });
   }
   function toggleAll() {
-    setSelected((s) => (s.size === labelled.length ? new Set() : new Set(labelled.map((i) => i.id))));
+    setSelected((s) => (s.size === labelled.length ? new Set() : new Set(labelled.map((t) => t.key))));
   }
 
   async function genMissing() {
     setBusy(true);
     setMsg("");
     try {
-      const existing = new Set(items.map((i) => i.barcode).filter(Boolean) as string[]);
-      for (const it of missing) {
+      const existing = new Set(
+        items.flatMap((i) => [i.barcode, ...(i.packs ?? []).map((p) => p.barcode)]).filter(Boolean) as string[]
+      );
+      // Mint codes, grouping edits per item so multiple packs on one item are
+      // written in a single upsert.
+      const edits = new Map<string, Item>();
+      for (const t of missing) {
         const bc = generateInternalBarcode(existing);
         existing.add(bc);
-        await upsertItem({ ...it, barcode: bc });
+        const base = edits.get(t.itemId) ?? { ...items.find((i) => i.id === t.itemId)! };
+        if (t.packId) {
+          base.packs = (base.packs ?? []).map((p) => (p.id === t.packId ? { ...p, barcode: bc } : p));
+        } else {
+          base.barcode = bc;
+        }
+        edits.set(t.itemId, base);
       }
+      for (const it of edits.values()) await upsertItem(it);
       await refresh();
       setMsg(`Generated ${missing.length} barcode(s).`);
     } catch (e) {
@@ -73,7 +124,7 @@ export default function LabelsPage() {
     }
     setBusy(true);
     try {
-      await print(buildLabels(chosen));
+      await print(buildLabelCards(chosen.map((t) => ({ name: t.name, barcode: t.barcode as string, price: t.price, unit: t.unit }))));
       setMsg(`Sent ${chosen.length} label(s) to the printer.`);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Print failed.");
@@ -87,7 +138,7 @@ export default function LabelsPage() {
       <div className="print:hidden">
       <PageHeader
         title="Barcode Labels"
-        subtitle="Labels for in-store items (no printed barcode). Scanned products already have their own."
+        subtitle="Labels for in-store items & no-barcode packs. Scanned products already have their own."
         action={
           <div className="flex flex-wrap gap-2">
             {missing.length > 0 && (
@@ -115,8 +166,8 @@ export default function LabelsPage() {
 
       {labelled.length === 0 ? (
         <div className="card p-12 text-center text-sm text-muted-light print:hidden">
-          No in-store labels needed yet. Items added without a barcode get an internal one — those show up
-          here to print. Use “Generate missing” if any are still without a barcode.
+          No in-store labels needed yet. Items and packs added without a barcode get an internal one — those show
+          up here to print. Use “Generate missing” if any are still without a barcode.
         </div>
       ) : (
         <>
@@ -130,21 +181,21 @@ export default function LabelsPage() {
 
           {/* printable label grid */}
           <div className="print-area grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 print:grid-cols-3">
-            {labelled.map((i) => {
-              const on = selected.has(i.id);
+            {labelled.map((t) => {
+              const on = selected.has(t.key);
               return (
                 <div
-                  key={i.id}
-                  onClick={() => toggle(i.id)}
+                  key={t.key}
+                  onClick={() => toggle(t.key)}
                   className={`label-cell flex cursor-pointer flex-col items-center rounded-tile border bg-white p-3 text-center transition ${
                     on ? "border-brand" : "border-line opacity-60 print:hidden"
                   }`}
                 >
-                  <p className="mb-1 line-clamp-2 text-[12px] font-bold leading-tight text-ink">{i.name}</p>
-                  <Barcode value={i.barcode!} height={42} width={1.6} fontSize={12} />
+                  <p className="mb-1 line-clamp-2 text-[12px] font-bold leading-tight text-ink">{t.name}</p>
+                  <Barcode value={t.barcode!} height={42} width={1.6} fontSize={12} />
                   <p className="mt-1 text-[12px] font-semibold text-ink">
-                    {money(i.price)}
-                    <span className="text-[10px] font-normal text-muted-light"> {perUnit(i.unit)}</span>
+                    {money(t.price)}
+                    <span className="text-[10px] font-normal text-muted-light"> {perUnit(t.unit)}</span>
                   </p>
                 </div>
               );

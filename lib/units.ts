@@ -39,6 +39,55 @@ export function qtyLabel(qty: number, unit?: string): string {
   return `×${qty}`;
 }
 
+// Trims trailing zeros off a decimal count: 12 → "12", 12.50 → "12.5".
+function trimNum(x: number): string {
+  return Number.isInteger(x) ? String(x) : x.toFixed(3).replace(/\.?0+$/, "");
+}
+
+// Decomposes a base-unit stock count into friendly pack terms using the item's
+// largest pack: 112 packets (Case=240) → "112 packets"; 540 (Case=240) →
+// "2 Cases + 60 packets"; 90 kg (Bag=25) → "3 Bags + 15 kg". Falls back to the
+// plain base count when the item has no packs.
+export function formatStock(
+  stock: number,
+  item: { unit?: string; packs?: { label: string; baseQty: number }[] }
+): string {
+  const unit = item.unit || "pcs";
+  const packs = (item.packs ?? []).filter((p) => p.baseQty > 1);
+  if (packs.length === 0 || stock <= 0) return `${trimNum(Math.max(0, stock))} ${unit}`;
+  const pack = [...packs].sort((a, b) => b.baseQty - a.baseQty)[0];
+  const whole = Math.floor(stock / pack.baseQty);
+  const rem = Math.round((stock - whole * pack.baseQty) * 1000) / 1000;
+  const parts: string[] = [];
+  if (whole > 0) parts.push(`${whole} ${pack.label}${whole > 1 ? "s" : ""}`);
+  if (rem > 0 || whole === 0) parts.push(`${trimNum(rem)} ${unit}`);
+  return parts.join(" + ");
+}
+
+// Suggested pack sizes for fast item entry, chosen by category first, then the
+// base unit. Returns {label, baseQty} chips the Items form can one-tap add.
+export function packTemplates(
+  category?: string,
+  unit?: string
+): { label: string; baseQty: number }[] {
+  const u = unit || "pcs";
+  const byCat: Record<string, { label: string; baseQty: number }[]> = {
+    "Grocery & Staples":
+      u === "kg" ? [{ label: "Bag", baseQty: 25 }, { label: "Bag", baseQty: 50 }] : [{ label: "Case", baseQty: 24 }],
+    Beverages:
+      u === "L" || u === "ml"
+        ? [{ label: "Tin", baseQty: 15 }, { label: "Case", baseQty: 12 }]
+        : [{ label: "Case", baseQty: 24 }],
+    "Snacks & Branded Foods": [{ label: "Bundle", baseQty: 12 }, { label: "Case", baseQty: 240 }],
+    "Personal Care": [{ label: "Box", baseQty: 12 }, { label: "Case", baseQty: 144 }],
+    "Household & Cleaning": [{ label: "Box", baseQty: 12 }, { label: "Case", baseQty: 24 }],
+  };
+  if (category && byCat[category]) return byCat[category];
+  if (u === "kg") return [{ label: "Bag", baseQty: 25 }, { label: "Bag", baseQty: 50 }];
+  if (u === "L" || u === "ml") return [{ label: "Tin", baseQty: 15 }];
+  return [{ label: "Bundle", baseQty: 12 }, { label: "Case", baseQty: 24 }];
+}
+
 export const CATEGORIES: string[] = [
   "Grocery & Staples",
   "Dairy & Eggs",

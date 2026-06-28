@@ -11,11 +11,15 @@ import { Plus, Minus } from "lucide-react";
 export default function PickerRow({
   item,
   qty,
+  price,
+  unitLabel,
   onAdd,
   onDec,
 }: {
   item: Item;
   qty: number;
+  price: number; // default sell-level price
+  unitLabel: string; // default sell-level unit label
   onAdd: (item: Item) => void;
   onDec: (item: Item) => void;
 }) {
@@ -36,8 +40,8 @@ export default function PickerRow({
           {item.size ? <span className="font-normal text-muted-light"> · {item.size}</span> : null}
         </p>
         <p className="text-[12.5px] font-bold text-brand">
-          {money(item.price)}
-          <span className="ml-0.5 text-[10px] font-normal text-muted-light">{perUnit(item.unit)}</span>
+          {money(price)}
+          <span className="ml-0.5 text-[10px] font-normal text-muted-light">{perUnit(unitLabel)}</span>
         </p>
       </div>
 

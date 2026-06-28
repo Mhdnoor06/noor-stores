@@ -162,7 +162,9 @@ export function buildReceipt(bill: Bill, settings: Settings): Uint8Array {
   b.line(rule(w));
 
   for (const line of bill.lines) {
-    const label = line.size ? `${line.name} ${line.size}` : line.name;
+    const base = line.size ? `${line.name} ${line.size}` : line.name;
+    // Pack lines show the sold unit (e.g. "Parle-G (Case)"); base lines don't.
+    const label = line.packId ? `${base} (${line.unit})` : base;
     b.line(
       itemRow(label, qtyLabel(line.qty, line.unit), money(line.price * line.qty), w)
     );
@@ -184,13 +186,19 @@ export function buildReceipt(bill: Bill, settings: Settings): Uint8Array {
 
   // payment breakdown (cash / UPI / card split, change, udhaar balance)
   const pay = bill.payment ?? { cash: 0, upi: 0, card: 0 };
+  const settle = bill.settleOld ?? { cash: 0, upi: 0, card: 0 };
   const change = bill.changeGiven ?? 0;
   const credit = bill.credit ?? 0;
-  const cashTendered = pay.cash + change; // show what was handed over
+  const oldPaid = settle.cash + settle.upi + settle.card;
+  // Show the full amount handed over per method (this bill + old balance + change).
+  const cashTendered = pay.cash + settle.cash + change;
+  const upiTendered = pay.upi + settle.upi;
+  const cardTendered = pay.card + settle.card;
   if (cashTendered > 0) b.line(twoCol("Cash:", money(cashTendered), w));
-  if (pay.upi > 0) b.line(twoCol("UPI:", money(pay.upi), w));
-  if (pay.card > 0) b.line(twoCol("Card:", money(pay.card), w));
+  if (upiTendered > 0) b.line(twoCol("UPI:", money(upiTendered), w));
+  if (cardTendered > 0) b.line(twoCol("Card:", money(cardTendered), w));
   if (change > 0) b.line(twoCol("Change:", money(change), w));
+  if (oldPaid > 0) b.line(twoCol("Old balance paid:", money(oldPaid), w));
   if (credit > 0) {
     b.bold(true).line(twoCol("Balance (Udhaar):", money(credit), w)).bold(false);
     if (bill.customerName) b.line(`On account: ${bill.customerName}`);
@@ -204,23 +212,41 @@ export function buildReceipt(bill: Bill, settings: Settings): Uint8Array {
   return b.build();
 }
 
-// Prints barcode labels on the thermal printer — one stacked label per item
-// (name + price + CODE128 barcode). Good for sticking on loose/unbranded goods.
-export function buildLabels(items: Item[]): Uint8Array {
+// One printable barcode label — works for a base item or a pack (bundle/case).
+export interface LabelCard {
+  name: string;
+  barcode: string;
+  price: number;
+  unit?: string;
+}
+
+// Prints barcode labels on the thermal printer — one stacked label per card
+// (name + price + CODE128 barcode). Good for loose/unbranded goods and for
+// no-barcode bundles/cases so they can be scanned at the counter.
+export function buildLabelCards(cards: LabelCard[]): Uint8Array {
   const b = new EscPosBuilder();
   b.init();
-  for (const item of items) {
-    if (!item.barcode) continue;
+  for (const c of cards) {
+    if (!c.barcode) continue;
     b.align("center");
-    const name = item.name.length > 32 ? item.name.slice(0, 31) + "…" : item.name;
+    const name = c.name.length > 32 ? c.name.slice(0, 31) + "…" : c.name;
     b.bold(true).line(name).bold(false);
-    b.line(`${money(item.price)} ${perUnit(item.unit)}`);
+    b.line(`${money(c.price)} ${perUnit(c.unit)}`);
     b.feed(1);
-    b.code128(item.barcode);
+    b.code128(c.barcode);
     b.feed(3);
   }
   b.cut();
   return b.build();
+}
+
+// Back-compat: print labels straight from catalogue items (base unit only).
+export function buildLabels(items: Item[]): Uint8Array {
+  return buildLabelCards(
+    items
+      .filter((i) => i.barcode)
+      .map((i) => ({ name: i.name, barcode: i.barcode as string, price: i.price, unit: i.unit }))
+  );
 }
 
 // Daily sales summary for a day-close / cash reconciliation.
