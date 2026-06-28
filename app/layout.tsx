@@ -9,12 +9,12 @@ import OfflineSync from "@/components/OfflineSync";
 import NumberInputGuard from "@/components/NumberInputGuard";
 
 export const metadata: Metadata = {
-  title: "Noor POS — Billing",
-  description: "Web POS billing with EZO Bluetooth thermal printer",
-  applicationName: "Noor POS",
+  title: "Noor Store",
+  description: "Store billing & inventory management with Bluetooth thermal printing",
+  applicationName: "Noor Store",
   appleWebApp: {
     capable: true,
-    title: "Noor POS",
+    title: "Noor Store",
     statusBarStyle: "default",
   },
   icons: {

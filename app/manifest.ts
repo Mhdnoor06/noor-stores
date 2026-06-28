@@ -2,9 +2,9 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Noor POS — Billing",
-    short_name: "Noor POS",
-    description: "Web POS billing with EZO Bluetooth thermal printer",
+    name: "Noor Store",
+    short_name: "Noor Store",
+    description: "Store billing & inventory management with Bluetooth thermal printing",
     start_url: "/",
     scope: "/",
     display: "standalone",
