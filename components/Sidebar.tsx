@@ -15,7 +15,7 @@ export default function Sidebar() {
           NS
         </span>
         <span className="text-[15px] font-bold tracking-[-.01em] text-ink">
-          Noor POS
+          Noor Store
         </span>
       </Link>
 

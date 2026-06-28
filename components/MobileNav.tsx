@@ -15,7 +15,7 @@ export function MobileTopBar() {
         <span className="flex h-7 w-7 items-center justify-center rounded-tile bg-brand text-xs font-bold text-white">
           NS
         </span>
-        <span className="text-[15px] font-bold text-ink">Noor POS</span>
+        <span className="text-[15px] font-bold text-ink">Noor Store</span>
       </Link>
       <div className="flex items-center gap-2">
         <InstallButton compact />
