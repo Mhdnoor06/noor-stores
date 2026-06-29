@@ -17,6 +17,22 @@ export const CMD = {
   FONT_NORMAL: [GS, 0x21, 0x00],
 };
 
+// Transliterate Unicode punctuation/symbols to printer-safe ASCII so a 58mm
+// thermal printer never emits garbage bytes. Accents are reduced to their base
+// letter; anything still non-ASCII becomes '?'.
+function toAscii(s: string): string {
+  return s
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "") // strip diacritic marks (accents)
+    .replace(/[×✕✖]/g, "x") // multiplication / cross signs
+    .replace(/₹/g, "Rs.") // rupee sign
+    .replace(/[–—]/g, "-") // en / em dash
+    .replace(/[“”„]/g, '"') // curly double quotes
+    .replace(/[‘’]/g, "'") // curly single quotes
+    .replace(/…/g, "...") // ellipsis
+    .replace(/[^\x00-\x7f]/g, "?"); // anything else non-ASCII
+}
+
 // Builds a sequence of ESC/POS byte arrays / strings into one Uint8Array.
 export class EscPosBuilder {
   private chunks: number[] = [];
@@ -27,10 +43,12 @@ export class EscPosBuilder {
   }
 
   text(str: string): this {
-    // CP437 / ASCII subset is fine for English + Rs. Most cheap printers
-    // print plain ASCII bytes directly.
-    for (let i = 0; i < str.length; i++) {
-      this.chunks.push(str.charCodeAt(i) & 0xff);
+    // Thermal printers only render their ASCII/CP437 range — any Unicode char
+    // (×, …, ₹, smart quotes, accents) prints as garbage bytes. Transliterate
+    // to ASCII first so e.g. "×1" prints as "x1", not "Î1".
+    const ascii = toAscii(str);
+    for (let i = 0; i < ascii.length; i++) {
+      this.chunks.push(ascii.charCodeAt(i) & 0x7f);
     }
     return this;
   }
@@ -128,7 +146,7 @@ export function money(n: number): string {
 /* ---------------------------- Receipts ---------------------------- */
 
 import type { Bill, Item, Settings } from "./types";
-import { qtyLabel, perUnit } from "./units";
+import { qtyLabel, perUnit, isMeasured } from "./units";
 
 function formatDate(epoch: number): string {
   const d = new Date(epoch);
@@ -165,9 +183,10 @@ export function buildReceipt(bill: Bill, settings: Settings): Uint8Array {
     const base = line.size ? `${line.name} ${line.size}` : line.name;
     // Pack lines show the sold unit (e.g. "Parle-G (Case)"); base lines don't.
     const label = line.packId ? `${base} (${line.unit})` : base;
-    b.line(
-      itemRow(label, qtyLabel(line.qty, line.unit), money(line.price * line.qty), w)
-    );
+    // Counted items: just the number under the "Qty" column (no ×). Weight/volume
+    // items keep their unit, e.g. "1.5 kg".
+    const qtyCol = isMeasured(line.unit) ? qtyLabel(line.qty, line.unit) : String(line.qty);
+    b.line(itemRow(label, qtyCol, money(line.price * line.qty), w));
   }
 
   b.line(rule(w));
