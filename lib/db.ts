@@ -230,6 +230,8 @@ type BillRow = {
   credit: number | string | null;
   lines: BillLine[];
   created_at: string;
+  bill_type: string | null;
+  return_of_bill_id: string | null;
 };
 
 function num(v: number | string | null | undefined): number {
@@ -265,6 +267,8 @@ function rowToBill(r: BillRow): Bill {
     changeGiven: Math.max(0, paid - total),
     paymentMethod: (r.payment_method as Bill["paymentMethod"]) ?? "cash",
     amountPaid: r.amount_paid != null ? Number(r.amount_paid) : paid,
+    billType: (r.bill_type === "return" ? "return" : "sale") as Bill["billType"],
+    returnOfBillId: r.return_of_bill_id ?? undefined,
   };
 }
 
@@ -317,6 +321,8 @@ export async function saveBill(bill: Bill): Promise<void> {
     payment_method: primary,
     amount_paid: paid,
     lines: bill.lines,
+    bill_type: bill.billType ?? "sale",
+    return_of_bill_id: bill.returnOfBillId ?? null,
     created_at: new Date(bill.createdAt).toISOString(),
   });
   if (error) throw new Error(error.message);
@@ -353,6 +359,57 @@ export async function saveBill(bill: Bill): Promise<void> {
       }
     }
     await adjustBalance(customerId, -settleTotal);
+  }
+}
+
+// Saves a return bill, restores stock for returned items, and optionally reduces
+// the customer's udhaar balance when the refund is applied to their credit.
+export async function saveReturnBill(
+  returnBill: Bill,
+  stockLines: { itemId: string; qty: number }[],
+  refundMethod: "cash" | "upi" | "card" | "udhaar"
+): Promise<void> {
+  const pay =
+    refundMethod === "udhaar"
+      ? { cash: 0, upi: 0, card: 0 }
+      : returnBill.payment ?? { cash: 0, upi: 0, card: 0 };
+
+  const { error } = await supabase.from("bills").insert({
+    id: returnBill.id,
+    number: returnBill.number,
+    customer_name: returnBill.customerName ?? null,
+    customer_phone: returnBill.customerPhone ?? null,
+    customer_id: returnBill.customerId ?? null,
+    subtotal: returnBill.total,
+    discount: 0,
+    round_off: 0,
+    total: returnBill.total,
+    paid_cash: pay.cash,
+    paid_upi: pay.upi,
+    paid_card: pay.card,
+    credit: 0,
+    payment_method: refundMethod === "udhaar" ? "cash" : refundMethod,
+    amount_paid: pay.cash + pay.upi + pay.card,
+    lines: returnBill.lines,
+    bill_type: "return",
+    return_of_bill_id: returnBill.returnOfBillId ?? null,
+    created_at: new Date(returnBill.createdAt).toISOString(),
+  });
+  if (error) throw new Error(error.message);
+
+  // Add returned stock back (base units).
+  if (stockLines.length > 0) {
+    await recordStockIn(stockLines.map((l) => ({ itemId: l.itemId, baseQty: l.qty })));
+  }
+
+  // Reduce udhaar: record as a repayment on the customer's credit ledger.
+  if (refundMethod === "udhaar" && returnBill.customerId) {
+    await recordRepayment(
+      returnBill.customerId,
+      returnBill.total,
+      "cash",
+      `Return · Bill #${returnBill.number}`
+    );
   }
 }
 

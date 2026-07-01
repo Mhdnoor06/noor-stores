@@ -72,6 +72,8 @@ export interface Bill {
   payment: BillPayment; // amount settled per method
   credit?: number; // balance left on udhaar (0 if fully paid)
   changeGiven?: number; // cash change returned on overpayment
+  billType?: "sale" | "return"; // "return" = this bill reverses items from another bill
+  returnOfBillId?: string; // set when billType === "return"
   // Portion of the payment that settles the customer's OLD udhaar (per method),
   // when the cashier folds the previous balance onto this bill.
   settleOld?: BillPayment;
