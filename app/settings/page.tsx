@@ -147,15 +147,15 @@ export default function SettingsPage() {
           ) : (
             <button
               onClick={() => connect()}
-              disabled={!supported || status === "connecting"}
+              disabled={!supported || status === "connecting" || status === "reconnecting"}
               className="btn-primary h-10"
             >
-              {status === "connecting" ? "Connecting…" : "Scan & Connect"}
+              {status === "connecting" ? "Connecting…" : status === "reconnecting" ? "Reconnecting…" : "Scan & Connect"}
             </button>
           )}
         </div>
 
-        {!isConnected && supported && (
+        {!isConnected && supported && status !== "reconnecting" && (
           <button
             onClick={() => connect(true)}
             disabled={status === "connecting"}

@@ -911,8 +911,8 @@ export default function NewBillPage() {
           {/* actions */}
           <div className="flex flex-wrap gap-3">
             {!isConnected && supported && (
-              <button onClick={() => connect()} disabled={status === "connecting"} className="btn-soft flex-1">
-                {status === "connecting" ? "Connecting…" : "Connect Printer"}
+              <button onClick={() => connect()} disabled={status === "connecting" || status === "reconnecting"} className="btn-soft flex-1">
+                {status === "connecting" ? "Connecting…" : status === "reconnecting" ? "Reconnecting…" : "Connect Printer"}
               </button>
             )}
             <button onClick={handlePrint} disabled={lines.length === 0 || busy} className="btn-primary flex-1">
