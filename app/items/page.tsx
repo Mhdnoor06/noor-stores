@@ -151,8 +151,6 @@ export default function ItemsPage() {
   }
   function openAdd() {
     resetForm();
-    // Start with a sensible default unit so the form is never empty.
-    setUnits([{ key: uid(), label: "Piece", unit: "pcs", baseQty: "1", wholesale: "", barcode: "", atomic: true }]);
     setErr("");
     setShowForm(true);
     setTimeout(() => nameRef.current?.focus(), 80);
@@ -346,7 +344,6 @@ export default function ItemsPage() {
         return;
       }
       resetForm();
-      setUnits([{ key: uid(), label: "Piece", unit: "pcs", baseQty: "1", wholesale: "", barcode: "", atomic: true }]);
       setForm({ ...EMPTY, barcode: code });
       setShowForm(true);
       setMsg(`New barcode ${code} — looking up product…`);

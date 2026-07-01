@@ -24,6 +24,7 @@ export default function BillItem({
   onRemove: (itemId: string) => void;
 }) {
   const measured = isMeasured(line.unit);
+
   return (
     <div className="flex items-center gap-3 border-t border-line-soft py-3 first:border-t-0">
       <div className="min-w-0 flex-1">
@@ -81,7 +82,7 @@ export default function BillItem({
           <span className="w-6 text-xs font-medium text-muted-light">{line.unit}</span>
         </div>
       ) : (
-        // counted units → +/- stepper
+        // counted units → stepper; tap the number to type quantity directly
         <div className="flex items-center gap-1">
           <button
             onClick={() => onQty(line.itemId, -1)}
@@ -90,7 +91,15 @@ export default function BillItem({
           >
             <Minus size={15} />
           </button>
-          <span className="w-7 text-center text-sm font-bold">{line.qty}</span>
+          <NumInput
+            step="any"
+            min="0"
+            inputMode="decimal"
+            value={line.qty}
+            onValueChange={(v) => onSetQty(line.itemId, v)}
+            className="h-8 w-10 rounded-[9px] border border-line-input bg-white px-1 text-center text-sm font-bold outline-none focus:border-brand"
+            aria-label="Quantity"
+          />
           <button
             onClick={() => onQty(line.itemId, 1)}
             className="flex h-8 w-8 items-center justify-center rounded-[9px] border border-line-input text-muted-dark hover:bg-canvas"
